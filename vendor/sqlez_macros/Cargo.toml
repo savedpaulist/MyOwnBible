@@ -1,0 +1,19 @@
+[package]
+name = "sqlez_macros"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Vendored from Zed (crates/sqlez_macros). See LICENSE-GPL."
+
+[lib]
+path = "src/sqlez_macros.rs"
+proc-macro = true
+doctest = false
+test = false
+
+[dependencies]
+sqlformat = "0.2"
+syn = { version = "2.0", default-features = false, features = ["proc-macro"] }
+
+[target.'cfg(not(any(target_os = "linux", target_os = "freebsd")))'.dependencies]
+sqlez = { path = "../sqlez" }

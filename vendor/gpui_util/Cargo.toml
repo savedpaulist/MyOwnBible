@@ -1,0 +1,16 @@
+[package]
+name = "gpui_util"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Vendored from Zed (crates/gpui_util). See LICENSE-APACHE."
+
+[lib]
+doctest = false
+
+[dependencies]
+log = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+which = "8"

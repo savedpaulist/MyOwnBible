@@ -1,0 +1,25 @@
+[package]
+name = "sqlez"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Vendored from Zed (crates/sqlez). See LICENSE-GPL."
+
+[lib]
+doctest = false
+
+[dependencies]
+anyhow = "1"
+collections = { path = "../collections" }
+futures = "0.3.34"
+indoc = "2"
+libsqlite3-sys = { version = "0.30.1", features = ["bundled"] }
+log = "0.4"
+parking_lot = "0.12.1"
+path = { path = "../path" }
+sqlformat = "0.2"
+thread_local = "1.1.4"
+uuid = { version = "1.1", features = ["serde"] }
+
+[dev-dependencies]
+pollster = "0.4.0"

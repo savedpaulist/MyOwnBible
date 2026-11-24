@@ -1,0 +1,101 @@
+[workspace]
+members = [
+    "crates/bible_domain",
+    "crates/mybible",
+    "crates/notes_core",
+    "crates/app_state",
+    "crates/shell",
+    "crates/bible_ui",
+    "vendor/sqlez",
+    "vendor/sqlez_macros",
+    "vendor/collections",
+    "vendor/path",
+    "vendor/gpui_util",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1"
+env_logger = "0.11"
+log = "0.4"
+parking_lot = "0.12.1"
+uuid = { version = "1.1", features = ["serde", "v7"] }
+
+bible_domain = { path = "crates/bible_domain" }
+mybible = { path = "crates/mybible" }
+notes_core = { path = "crates/notes_core" }
+app_state = { path = "crates/app_state" }
+shell = { path = "crates/shell" }
+bible_ui = { path = "crates/bible_ui" }
+
+sqlez = { path = "vendor/sqlez" }
+sqlez_macros = { path = "vendor/sqlez_macros" }
+collections = { path = "vendor/collections" }
+
+# Скорость итераций, как в gpui-kit: тяжёлые библиотеки текста и раскладки
+# оптимизируем даже в dev, иначе отрисовка текста неприлично медленная.
+[profile.dev]
+debug = "limited"
+split-debuginfo = "unpacked"
+
+[profile.dev.package]
+resvg = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+smol = { opt-level = 3 }
+gpui-pre = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+gpui-pre-sum-tree = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
+gpui-base = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+ropey = { opt-level = 3 }
+markdown = { opt-level = 3 }
+
+# --- Вендорные патчи -------------------------------------------------------
+# gpui-base 0.10.0 с патчем BibleOWN: тултип ссылки TextView привязан
+# к позиции появления, а не следует за указателем (src/text/inline.rs,
+# src/text/state.rs, помечено "BibleOWN patch"). При обновлении gpui-kit
+# проверить версию gpui-base и перенести патч.
+[patch.crates-io]
+gpui-pre = { path = "vendor/gpui-pre" }
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+gpui-base = { path = "vendor/gpui-base" }
+
+[profile.release]
+strip = "symbols"
+
+# --- Само приложение: тонкий бинарник, вся логика в крейтах ---
+
+[package]
+name = "bibleown"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bible_ui.workspace = true
+shell.workspace = true
+
+[build-dependencies]
+embed-resource = "3.0"
+
+# `cargo bundle --release` uses these assets when producing a macOS `.app`
+# (and an installer on the other supported platforms).
+[package.metadata.bundle]
+name = "BibleOWN"
+identifier = "com.bibleown.desktop"
+icon = [
+    "resources/branding/windows/mob.ico",
+    "resources/branding/macos/mob.icns",
+    "resources/branding/mob-logo-master-1024.png",
+]
+category = "Education"
+short_description = "Bible study, notes, and synchronization"
