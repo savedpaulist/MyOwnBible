@@ -501,9 +501,18 @@ impl SearchPanel {
             .filter(|meta| source_category(meta.kind).is_some())
             .map(|meta| meta.id.clone())
             .collect();
-        let mut picker = v_flex().gap_1().child(
+        let mut picker = v_flex().w_full().gap_4().child(
             h_flex()
+                .w_full()
                 .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(crate::ui_scale::panel_font_size(cx, 18.0)))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(crate::i18n::tr(cx, "Источники")),
+                )
                 .child(
                     Button::new("sources-all")
                         .xsmall()
@@ -525,6 +534,7 @@ impl SearchPanel {
                         })),
                 ),
         );
+        let mut source_tiles = h_flex().w_full().flex_wrap().items_start().gap_3();
         for category in ["Библия", "Комментарии", "Словари"] {
             let open = self.source_categories.contains(category);
             let category_ids: BTreeSet<_> = modules
@@ -535,40 +545,80 @@ impl SearchPanel {
             let category_all = category_ids
                 .iter()
                 .all(|id| !self.excluded_sources.contains(id));
-            picker = picker.child(
-                Button::new(category)
-                    .xsmall()
-                    .ghost()
-                    .label(crate::i18n::tr(cx, category))
-                    .icon(if open {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.source_categories.insert(category) {
-                            this.source_categories.remove(category);
-                        }
-                        cx.notify();
-                    })),
-            );
-            if open {
-                picker = picker.child(
-                    Checkbox::new(SharedString::from(format!("search-source-all-{category}")))
-                        .label(crate::i18n::tr(cx, "Все"))
-                        .checked(category_all)
-                        .on_click(cx.listener(move |this, checked, window, cx| {
-                            for id in &category_ids {
-                                if *checked {
-                                    this.excluded_sources.remove(id);
-                                } else {
-                                    this.excluded_sources.insert(id.clone());
-                                }
-                            }
-                            this.run_search(window, cx);
-                            cx.notify();
-                        })),
+            let mut tile = v_flex()
+                .w(px(270.))
+                .min_w(px(230.))
+                .max_w(px(340.))
+                .border_1()
+                .border_color(cx.theme().border)
+                .rounded_lg()
+                .bg(cx.theme().sidebar)
+                .overflow_hidden()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .p_3()
+                        .child(
+                            h_flex()
+                                .id(ElementId::Name(format!("source-tile-{category}").into()))
+                                .flex_1()
+                                .min_w_0()
+                                .gap_2()
+                                .items_center()
+                                .cursor_pointer()
+                                .hover(|style| style.text_color(cx.theme().accent))
+                                .child(
+                                    Icon::new(if open {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .xsmall(),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(crate::ui_scale::panel_font_size(cx, 15.0)))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(crate::i18n::tr(cx, category)),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !this.source_categories.insert(category) {
+                                        this.source_categories.remove(category);
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Checkbox::new(SharedString::from(format!(
+                                "search-source-all-{category}"
+                            )))
+                            .label(crate::i18n::tr(cx, "Все"))
+                            .checked(category_all)
+                            .on_click(cx.listener(
+                                move |this, checked, window, cx| {
+                                    for id in &category_ids {
+                                        if *checked {
+                                            this.excluded_sources.remove(id);
+                                        } else {
+                                            this.excluded_sources.insert(id.clone());
+                                        }
+                                    }
+                                    this.run_search(window, cx);
+                                    cx.notify();
+                                },
+                            )),
+                        ),
                 );
+            if open {
+                let mut list = v_flex()
+                    .w_full()
+                    .max_h(px(260.))
+                    .p_2()
+                    .gap_1()
+                    .border_t_1()
+                    .border_color(cx.theme().border);
                 for meta in modules
                     .iter()
                     .filter(|meta| source_category(meta.kind) == Some(category))
@@ -578,7 +628,7 @@ impl SearchPanel {
                         .description
                         .as_ref()
                         .map_or_else(|| id.to_string(), |d| format!("{id} — {d}"));
-                    picker = picker.child(
+                    list = list.child(
                         Checkbox::new(SharedString::from(format!("search-source-{id}")))
                             .label(label)
                             .checked(!self.excluded_sources.contains(&id))
@@ -593,19 +643,22 @@ impl SearchPanel {
                             })),
                     );
                 }
+                tile = tile.child(list.overflow_y_scrollbar());
             }
+            source_tiles = source_tiles.child(tile);
         }
+        picker = picker.child(source_tiles).child(
+            div()
+                .mt_2()
+                .text_size(px(crate::ui_scale::panel_font_size(cx, 18.0)))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(crate::i18n::tr(cx, "Выбранные книги Библии")),
+        );
         let books = app_services_arc(cx)
             .default_translation()
             .map(|module| app_services_arc(cx).registry.lock().books_of(&module))
             .unwrap_or_default();
-        picker = picker.child(
-            div()
-                .mt_3()
-                .mb_1()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(crate::i18n::tr(cx, "Выбранные книги Библии")),
-        );
+        let mut book_tiles = h_flex().w_full().flex_wrap().items_start().gap_3();
         for (group, from, to) in BOOK_GROUPS {
             let group_books: Vec<_> = books
                 .iter()
@@ -619,47 +672,83 @@ impl SearchPanel {
             let all_selected = group_books
                 .iter()
                 .all(|book| !self.excluded_books.contains(&BookNumber(book.book_number)));
-            picker = picker.child(
-                Button::new(*group)
-                    .xsmall()
-                    .ghost()
-                    .label(crate::i18n::tr(cx, group))
-                    .icon(if open {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.source_categories.insert(group) {
-                            this.source_categories.remove(group);
-                        }
-                        cx.notify();
-                    })),
-            );
-            if open {
-                let all_books = group_books
-                    .iter()
-                    .map(|book| BookNumber(book.book_number))
-                    .collect::<Vec<_>>();
-                picker = picker.child(
-                    Checkbox::new(SharedString::from(format!("search-book-all-{group}")))
-                        .label(crate::i18n::tr(cx, "Все"))
-                        .checked(all_selected)
-                        .on_click(cx.listener(move |this, checked, window, cx| {
-                            for book in &all_books {
-                                if *checked {
-                                    this.excluded_books.remove(book);
-                                } else {
-                                    this.excluded_books.insert(*book);
-                                }
-                            }
-                            this.run_search(window, cx);
-                            cx.notify();
-                        })),
+            let all_books = group_books
+                .iter()
+                .map(|book| BookNumber(book.book_number))
+                .collect::<Vec<_>>();
+            let mut tile = v_flex()
+                .w(px(270.))
+                .min_w(px(230.))
+                .max_w(px(340.))
+                .border_1()
+                .border_color(cx.theme().border)
+                .rounded_lg()
+                .bg(cx.theme().sidebar)
+                .overflow_hidden()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .p_3()
+                        .child(
+                            h_flex()
+                                .id(ElementId::Name(format!("book-tile-{group}").into()))
+                                .flex_1()
+                                .min_w_0()
+                                .gap_2()
+                                .items_center()
+                                .cursor_pointer()
+                                .hover(|style| style.text_color(cx.theme().accent))
+                                .child(
+                                    Icon::new(if open {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .xsmall(),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(crate::ui_scale::panel_font_size(cx, 15.0)))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(crate::i18n::tr(cx, group)),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !this.source_categories.insert(group) {
+                                        this.source_categories.remove(group);
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Checkbox::new(SharedString::from(format!("search-book-all-{group}")))
+                                .label(crate::i18n::tr(cx, "Все"))
+                                .checked(all_selected)
+                                .on_click(cx.listener(move |this, checked, window, cx| {
+                                    for book in &all_books {
+                                        if *checked {
+                                            this.excluded_books.remove(book);
+                                        } else {
+                                            this.excluded_books.insert(*book);
+                                        }
+                                    }
+                                    this.run_search(window, cx);
+                                    cx.notify();
+                                })),
+                        ),
                 );
+            if open {
+                let mut list = v_flex()
+                    .w_full()
+                    .max_h(px(260.))
+                    .p_2()
+                    .gap_1()
+                    .border_t_1()
+                    .border_color(cx.theme().border);
                 for book in group_books {
                     let number = BookNumber(book.book_number);
-                    picker = picker.child(
+                    list = list.child(
                         Checkbox::new(SharedString::from(format!(
                             "search-book-{}",
                             book.book_number
@@ -679,9 +768,14 @@ impl SearchPanel {
                         )),
                     );
                 }
+                tile = tile.child(list.overflow_y_scrollbar());
             }
+            book_tiles = book_tiles.child(tile);
         }
-        picker.id("search-source-picker").into_any_element()
+        picker
+            .child(book_tiles)
+            .id("search-source-picker")
+            .into_any_element()
     }
 
     fn result_row(&self, row: ResultRow, cx: &mut Context<Self>) -> AnyElement {
@@ -1091,6 +1185,7 @@ impl Render for SearchPanel {
                                         button.primary()
                                     })
                                     .label(crate::i18n::tr(cx, "Точное"))
+                                    .tooltip(crate::i18n::tr(cx, "Точная фраза и порядок слов. Например: «благодать и истина»."))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.search_mode = SearchMode::Exact;
                                         this.run_search(window, cx);
@@ -1104,6 +1199,7 @@ impl Render for SearchPanel {
                                         button.primary()
                                     })
                                     .label(crate::i18n::tr(cx, "Частичное"))
+                                    .tooltip(crate::i18n::tr(cx, "Все введённые начала слов. Например: «благо истин» найдёт формы обоих слов."))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.search_mode = SearchMode::Partial;
                                         this.run_search(window, cx);
@@ -1117,6 +1213,7 @@ impl Render for SearchPanel {
                                         button.primary()
                                     })
                                     .label(crate::i18n::tr(cx, "Похожее"))
+                                    .tooltip(crate::i18n::tr(cx, "Любое из введённых начал слов. Например: «мир свет» найдёт стихи хотя бы с одним словом."))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.search_mode = SearchMode::Similar;
                                         this.run_search(window, cx);

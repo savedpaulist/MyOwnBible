@@ -4,10 +4,12 @@
 //! watcher'ом; сценарии возвращают готовые ViewModel. Правило источника
 //! истины: файл на диске главный, notes.db — только индекс.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result, bail};
+use chrono::Local;
+use serde::{Deserialize, Serialize};
 
 use notes_core::index::NotesIndex;
 use notes_core::store::NoteSearchHit;
@@ -115,6 +117,202 @@ pub struct NoteDocument {
     pub body: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteFolder {
+    pub relpath: String,
+    pub name: String,
+}
+
+/// Reusable note recipe. Patterns support `{title}`, `{date}`, `{time}` and
+/// `{datetime}` and are expanded only when a note is created.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NoteTemplate {
+    pub id: String,
+    pub name: String,
+    pub title_pattern: String,
+    pub body_pattern: String,
+    #[serde(default)]
+    pub folder: String,
+}
+
+impl NoteTemplate {
+    pub fn blank() -> Self {
+        Self {
+            id: uuid::Uuid::now_v7().to_string(),
+            name: "Новый шаблон".to_owned(),
+            title_pattern: "{title}".to_owned(),
+            body_pattern: "# {title}\n\n".to_owned(),
+            folder: String::new(),
+        }
+    }
+}
+
+const TEMPLATES_FILE: &str = ".bibleown-note-templates.json";
+
+fn safe_relative_path(raw: &str) -> Result<PathBuf> {
+    let raw = raw.trim().replace('\\', "/");
+    let path = Path::new(&raw);
+    if raw.is_empty() || path.is_absolute() {
+        bail!("укажите относительный путь внутри хранилища заметок");
+    }
+    let mut clean = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) if !part.is_empty() => clean.push(part),
+            _ => bail!("путь не должен содержать . или .."),
+        }
+    }
+    Ok(clean)
+}
+
+fn slash_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|part| part.as_os_str().to_str())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn valid_folder(raw: &str) -> Result<PathBuf> {
+    if raw.trim().is_empty() {
+        return Ok(PathBuf::new());
+    }
+    safe_relative_path(raw)
+}
+
+pub fn list_folders(handle: &NotesHandle) -> Result<Vec<NoteFolder>> {
+    let root = handle.0.notes_dir();
+    let mut folders = walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_dir())
+        .filter_map(|entry| {
+            let relative = entry.path().strip_prefix(root).ok()?;
+            let relpath = slash_path(relative);
+            let name = entry.file_name().to_string_lossy().into_owned();
+            Some(NoteFolder { relpath, name })
+        })
+        .collect::<Vec<_>>();
+    folders.sort_by(|a, b| {
+        a.relpath
+            .to_lowercase()
+            .cmp(&b.relpath.to_lowercase())
+            .then_with(|| a.relpath.cmp(&b.relpath))
+    });
+    Ok(folders)
+}
+
+pub fn create_folder(handle: &NotesHandle, relpath: &str) -> Result<NoteFolder> {
+    let relative = safe_relative_path(relpath)?;
+    let absolute = handle.0.notes_dir().join(&relative);
+    std::fs::create_dir_all(&absolute)
+        .with_context(|| format!("не удалось создать папку {}", absolute.display()))?;
+    let name = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(relpath)
+        .to_owned();
+    Ok(NoteFolder {
+        relpath: slash_path(&relative),
+        name,
+    })
+}
+
+pub fn move_note(handle: &NotesHandle, relpath: &str, folder: &str) -> Result<NoteDocument> {
+    let source_relative = safe_relative_path(relpath)?;
+    let folder = valid_folder(folder)?;
+    let file_name = source_relative
+        .file_name()
+        .context("у заметки нет имени файла")?;
+    let target_relative = folder.join(file_name);
+    if source_relative == target_relative {
+        return open_note(handle, relpath);
+    }
+    let source = handle.0.notes_dir().join(&source_relative);
+    let target = handle.0.notes_dir().join(&target_relative);
+    if target.exists() {
+        bail!(
+            "в папке уже есть заметка с именем {}",
+            file_name.to_string_lossy()
+        );
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    {
+        let _guard = crate::sync::NOTE_WRITE.lock();
+        std::fs::rename(&source, &target).with_context(|| {
+            format!(
+                "не удалось перенести {} в {}",
+                source.display(),
+                target.display()
+            )
+        })?;
+    }
+    handle
+        .0
+        .apply_watch_events(vec![watcher::WatchEvent::Rename {
+            from: source,
+            to: target,
+        }])?;
+    open_note(handle, &slash_path(&target_relative))
+}
+
+pub fn load_templates(handle: &NotesHandle) -> Result<Vec<NoteTemplate>> {
+    let path = handle.0.notes_dir().join(TEMPLATES_FILE);
+    if !path.exists() {
+        return Ok(vec![NoteTemplate {
+            id: uuid::Uuid::now_v7().to_string(),
+            name: "Обычная заметка".to_owned(),
+            title_pattern: "{title}".to_owned(),
+            body_pattern: "# {title}\n\n".to_owned(),
+            folder: String::new(),
+        }]);
+    }
+    let bytes = std::fs::read(&path)?;
+    serde_json::from_slice(&bytes).context("не удалось прочитать шаблоны заметок")
+}
+
+pub fn save_templates(handle: &NotesHandle, templates: &[NoteTemplate]) -> Result<()> {
+    let path = handle.0.notes_dir().join(TEMPLATES_FILE);
+    std::fs::write(path, serde_json::to_vec_pretty(templates)?)?;
+    Ok(())
+}
+
+fn expand_template(pattern: &str, entered_title: &str, now: &chrono::DateTime<Local>) -> String {
+    pattern
+        .replace("{title}", entered_title.trim())
+        .replace("{date}", &now.format("%Y-%m-%d").to_string())
+        .replace("{time}", &now.format("%H-%M").to_string())
+        .replace("{datetime}", &now.format("%Y-%m-%d %H-%M").to_string())
+}
+
+pub fn create_note_from_template(
+    handle: &NotesHandle,
+    template: &NoteTemplate,
+    entered_title: &str,
+) -> Result<NoteDocument> {
+    let now = Local::now();
+    let title = expand_template(&template.title_pattern, entered_title, &now);
+    if title.trim().is_empty() {
+        bail!("шаблон создал пустое название заметки");
+    }
+    let folder = valid_folder(&template.folder)?;
+    let title_path = safe_relative_path(title.trim())?;
+    let mut relative = folder.join(title_path);
+    relative.set_extension("md");
+    let relpath = slash_path(&relative);
+    let absolute = handle.0.notes_dir().join(&relative);
+    if absolute.exists() {
+        bail!("заметка {relpath} уже существует");
+    }
+    let body = expand_template(&template.body_pattern, entered_title, &now);
+    save_note(handle, &relpath, &body)?;
+    open_note(handle, &relpath)
+}
+
 /// Сценарий «список заметок» для панели: заголовок + алиасы.
 pub fn list_notes(handle: &NotesHandle) -> Result<Vec<NoteSummary>> {
     let index = &handle.0;
@@ -204,11 +402,19 @@ pub fn save_note_if_current(
 /// Сценарий «создать заметку». relpath без «.md» дополняется.
 /// Существующий файл не затирается.
 pub fn create_note(handle: &NotesHandle, relpath: &str) -> Result<NoteDocument> {
-    let relpath = if relpath.ends_with(".md") {
-        relpath.to_string()
+    let relative = safe_relative_path(relpath)?;
+    let relative = if relative.extension().is_some_and(|ext| ext == "md") {
+        relative
     } else {
-        format!("{}.md", relpath.trim())
+        let mut with_extension = relative;
+        with_extension.set_extension("md");
+        with_extension
     };
+    // Avoid names such as `.md` after normalisation.
+    if relative.file_stem().is_none_or(|stem| stem.is_empty()) {
+        bail!("укажите название заметки");
+    }
+    let relpath = slash_path(&relative);
     let absolute = handle.0.notes_dir().join(&relpath);
     if !absolute.exists() {
         let title = relpath
@@ -383,5 +589,51 @@ mod tests {
         let (index, watcher) = init(&settings, &registry);
         assert!(index.is_none());
         assert!(watcher.is_none());
+    }
+
+    #[test]
+    fn folders_move_notes_and_templates_are_real_files() {
+        let modules = tempfile::TempDir::new().unwrap();
+        let vault_dir = tempfile::TempDir::new().unwrap();
+        let services = services(modules.path(), vault_dir.path());
+        let index = NotesHandle(services.notes.read().clone().unwrap());
+
+        create_folder(&index, "Богословие/Черновики").unwrap();
+        let folders = list_folders(&index).unwrap();
+        assert!(folders.iter().any(|folder| folder.relpath == "Богословие"));
+        assert!(
+            folders
+                .iter()
+                .any(|folder| folder.relpath == "Богословие/Черновики")
+        );
+
+        let note = create_note(&index, "Мысль").unwrap();
+        let moved = move_note(&index, &note.relpath, "Богословие/Черновики").unwrap();
+        assert_eq!(moved.relpath, "Богословие/Черновики/Мысль.md");
+        assert!(!absolute_path(&index, "Мысль.md").exists());
+
+        let template = NoteTemplate {
+            id: "daily".into(),
+            name: "Дневник".into(),
+            title_pattern: "{date} {title}".into(),
+            body_pattern: "# {title}\n\nСоздано: {date} {time}\n".into(),
+            folder: "Дневник".into(),
+        };
+        save_templates(&index, std::slice::from_ref(&template)).unwrap();
+        assert_eq!(load_templates(&index).unwrap(), vec![template.clone()]);
+        let from_template = create_note_from_template(&index, &template, "Молитва").unwrap();
+        assert!(from_template.relpath.starts_with("Дневник/"));
+        assert!(from_template.relpath.ends_with(" Молитва.md"));
+        assert!(from_template.body.contains("# Молитва"));
+    }
+
+    #[test]
+    fn note_paths_cannot_escape_vault() {
+        let modules = tempfile::TempDir::new().unwrap();
+        let vault_dir = tempfile::TempDir::new().unwrap();
+        let services = services(modules.path(), vault_dir.path());
+        let index = NotesHandle(services.notes.read().clone().unwrap());
+        assert!(create_note(&index, "../outside").is_err());
+        assert!(create_folder(&index, "/outside").is_err());
     }
 }

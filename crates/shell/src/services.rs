@@ -263,6 +263,108 @@ pub struct WordDescription {
     pub morph_gloss: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct WordUsageBook {
+    pub book: BookNumber,
+    pub short_name: String,
+    pub long_name: String,
+    pub count: usize,
+    pub hits: Vec<WordUsageHit>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WordUsageHit {
+    pub chapter: u16,
+    pub verse: u16,
+    pub text: String,
+    pub occurrences: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct WordUsageViewModel {
+    pub module: ModuleId,
+    pub query: String,
+    pub uses_strong: bool,
+    pub total: usize,
+    pub books: Vec<WordUsageBook>,
+}
+
+/// Считает употребления выбранного слова по книгам текущего перевода.
+/// Если у токена есть Strong's, сравнивается именно его нормализованный
+/// номер. Иначе используется точное Unicode-регистронезависимое совпадение
+/// видимого слова — никаких префиксов и «похожих» форм.
+pub fn word_usage(
+    services: &AppServices,
+    description: &WordDescription,
+) -> anyhow::Result<WordUsageViewModel> {
+    let target_strong = description.strong.as_deref().map(strip_strong_prefix);
+    let target_word = description.word.trim().to_lowercase();
+    let query = target_strong
+        .as_ref()
+        .map(|strong| description.strong.clone().unwrap_or_else(|| strong.clone()))
+        .unwrap_or_else(|| description.word.clone());
+    let mut registry = services.registry.lock();
+    let books = registry.books_of(&description.module);
+    let mut rows = Vec::with_capacity(books.len());
+    let mut total = 0usize;
+    for book in books {
+        let number = BookNumber(book.book_number);
+        let verses = registry.verses_of_book(&description.module, number)?;
+        let mut count = 0usize;
+        let mut hits = Vec::new();
+        for (chapter, verse, raw) in verses {
+            let parsed = bible_domain::verse::parse_verse_full(&raw, false, false, true);
+            let occurrences = parsed
+                .tokens
+                .iter()
+                .filter(|token| usage_token_matches(token, target_strong.as_deref(), &target_word))
+                .count();
+            count += occurrences;
+            if occurrences > 0 {
+                hits.push(WordUsageHit {
+                    chapter,
+                    verse,
+                    text: parsed.clean_text,
+                    occurrences,
+                });
+            }
+        }
+        if count == 0 {
+            continue;
+        }
+        total += count;
+        rows.push(WordUsageBook {
+            book: number,
+            short_name: book.short_name,
+            long_name: book.long_name,
+            count,
+            hits,
+        });
+    }
+    Ok(WordUsageViewModel {
+        module: description.module.clone(),
+        query,
+        uses_strong: target_strong.is_some(),
+        total,
+        books: rows,
+    })
+}
+
+fn usage_token_matches(
+    token: &bible_domain::verse::VerseToken,
+    target_strong: Option<&str>,
+    target_word_lowercase: &str,
+) -> bool {
+    match target_strong {
+        Some(strong) => token
+            .strong
+            .as_deref()
+            .map(strip_strong_prefix)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(strong)),
+        None => token.text.trim().to_lowercase() == target_word_lowercase,
+    }
+}
+
 /// Отрезает буквенный префикс номера Strong's («G25» → «25»; перенос
 /// `strip_strong_prefix` из dictionary.rs форка).
 fn strip_strong_prefix(value: &str) -> String {
@@ -542,6 +644,21 @@ mod tests {
     use std::path::Path;
 
     use bible_domain::verse::VerseToken;
+
+    #[test]
+    fn usage_matching_prefers_strong_and_falls_back_to_exact_word() {
+        let token = VerseToken {
+            text: "Любовь".to_string(),
+            range: 0..12,
+            strong: Some("G25".to_string()),
+            morph: None,
+            word_index_in_verse: 0,
+        };
+        assert!(usage_token_matches(&token, Some("25"), "другое"));
+        assert!(!usage_token_matches(&token, Some("26"), "любовь"));
+        assert!(usage_token_matches(&token, None, "любовь"));
+        assert!(!usage_token_matches(&token, None, "люб"));
+    }
 
     /// Перевод с префиксом Strong's «G» (как греческие подстрочники).
     fn write_bible(dir: &Path, name: &str) {

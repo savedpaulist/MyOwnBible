@@ -194,6 +194,10 @@ fn english(russian: &str) -> &str {
         "+ До" => "+ Before",
         "+ Добавить ссылку на стих" => "+ Add verse link",
         "+ Новый вопрос" => "+ New question",
+        "+ Новая заметка" => "+ New note",
+        "+ Новая папка" => "+ New folder",
+        "+ Новая цепочка" => "+ New chain",
+        "+ Новый тег" => "+ New tag",
         "+ После" => "+ After",
         "+ Создать" => "+ Create",
         "+ Узел" => "+ Node",
@@ -246,6 +250,7 @@ fn english(russian: &str) -> &str {
             "Click the heading above to choose a book."
         }
         "Название новой цепочки…" => "New chain title…",
+        "Название новой папки" => "New folder name",
         "Название цепочки…" => "Chain title…",
         "Обратные ссылки" => "Backlinks",
         "Обратных ссылок нет." => "No backlinks.",
@@ -415,6 +420,7 @@ fn english(russian: &str) -> &str {
         "Добавить тег" => "Add tag",
         "Имя нового тега…" => "New tag name…",
         "Новый тег" => "New tag",
+        "Новая заметка" => "New note",
         "Создать новый тег" => "Create new tag",
         "Создать новую заметку" => "Create new note",
         "Создать новую цепочку" => "Create new chain",
@@ -471,6 +477,7 @@ fn english(russian: &str) -> &str {
         "Действия вкладки" => "Tab actions",
         "Восстановить размер" => "Restore size",
         "Развернуть вкладку" => "Maximize tab",
+        "Закрыть разделение" => "Close split view",
         _ => russian,
     }
 }

@@ -20,7 +20,6 @@ use std::time::Duration;
 
 use bible_domain::ports::VerseSource as _;
 use gpui_kit::base::{SelectableText, TextSelection, h_flex, v_flex};
-use gpui_kit::component::Icon;
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -29,14 +28,16 @@ use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent, PanelInfo, PanelSt
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _};
+use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use bible_domain::annotations::AnnotationKind;
-use bible_domain::ids::{BookNumber, ModuleId, VerseRef};
+use bible_domain::ids::{AnchoredRef, BookNumber, ModuleId, VerseRef};
 use bible_domain::ports::ModuleCatalog as _;
 use bible_domain::tags::Tag;
 use bible_domain::verse::CleanVerse;
@@ -1079,45 +1080,6 @@ impl ReaderPanel {
         cx.notify();
     }
 
-    fn chapter_target(&self, delta: i32) -> Option<(u16, usize)> {
-        let chapter = self.current_position().0;
-        let index = if delta < 0 {
-            self.chapter_rows
-                .partition_point(|(value, _)| *value < chapter)
-                .checked_sub(1)?
-        } else {
-            self.chapter_rows
-                .partition_point(|(value, _)| *value <= chapter)
-        };
-        self.chapter_rows.get(index).copied()
-    }
-
-    fn move_chapter(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let Some((chapter, item_ix)) = self.chapter_target(delta) else {
-            return;
-        };
-        self.word_preview = None;
-        self.position = (chapter, 1);
-        self.list_state.scroll_to(ListOffset {
-            item_ix,
-            offset_in_item: px(0.),
-        });
-        if let (Some(module), Some(book)) = (&self.module, self.book) {
-            navigation::history_push(
-                cx,
-                self.tab_id,
-                shell::navigation::NavEntry {
-                    module: module.clone(),
-                    book,
-                    chapter,
-                    verse: None,
-                },
-            );
-        }
-        self.publish_location(cx);
-        cx.notify();
-    }
-
     // --- Навигатор «книга → глава → стих» ---------------------------------
 
     fn open_navigator(&mut self, cx: &mut Context<Self>) {
@@ -1401,6 +1363,113 @@ impl ReaderPanel {
         }
     }
 
+    /// Вложенная палитра контекстного меню. Popover привязан к строке меню,
+    /// поэтому раскрывается сбоку от места клика и не перекрывает выбранное
+    /// слово/стих. В правую панель этот сценарий больше не маршрутизируется.
+    fn local_style_item(label: &'static str, id: String, anchor: AnchoredRef) -> PopupMenuItem {
+        PopupMenuItem::element(move |_, cx| {
+            let anchor_for_content = anchor.clone();
+            let content_id = id.clone();
+            Popover::new(SharedString::from(format!("local-style-{id}")))
+                .trigger(
+                    Button::new(SharedString::from(format!("local-style-trigger-{id}")))
+                        .ghost()
+                        .xsmall()
+                        .w_full()
+                        .label(crate::i18n::tr(cx, label))
+                        .icon(IconName::ChevronRight),
+                )
+                .content(move |_, _, cx| {
+                    let mut panel = v_flex().w(px(292.)).gap_2().p_2();
+                    for (row_label, kind) in [
+                        ("Фон", AnnotationKind::Highlight),
+                        ("Цвет шрифта", AnnotationKind::WordColor),
+                        ("Подчёркивание", AnnotationKind::Underline),
+                    ] {
+                        let mut swatches = h_flex().gap_1().items_center();
+                        for name in ["yellow", "green", "blue", "pink", "orange", "purple"] {
+                            let color = palette::base(name, cx);
+                            let palette_name = name.to_string();
+                            let anchor = anchor_for_content.clone();
+                            swatches = swatches.child(
+                                div()
+                                    .id(ElementId::Name(
+                                        format!("local-style-{content_id}-{kind:?}-{name}").into(),
+                                    ))
+                                    .size(px(22.))
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(color)
+                                    .cursor_pointer()
+                                    .hover(|style| style.border_color(cx.theme().foreground))
+                                    .tooltip({
+                                        let label = crate::i18n::tr(cx, palette::label(name));
+                                        move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                label.clone(),
+                                            )
+                                            .build(window, cx)
+                                        }
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        if let Err(error) = shell::set_annotation(
+                                            app_services(cx),
+                                            anchor.clone(),
+                                            kind,
+                                            palette_name.clone(),
+                                        ) {
+                                            log::error!("set local annotation: {error:#}");
+                                        }
+                                        navigation::notify_annotations_changed(cx);
+                                        cx.stop_propagation();
+                                    }),
+                            );
+                        }
+                        let clear_anchor = anchor_for_content.clone();
+                        panel = panel.child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w(px(94.))
+                                        .flex_shrink_0()
+                                        .text_size(px(crate::ui_scale::panel_font_size(cx, 12.0)))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(crate::i18n::tr(cx, row_label)),
+                                )
+                                .child(swatches)
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "local-style-clear-{content_id}-{kind:?}"
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .tooltip(crate::i18n::tr(cx, "Снять"))
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            if let Err(error) = shell::clear_annotation(
+                                                app_services(cx),
+                                                &clear_anchor,
+                                                kind,
+                                            ) {
+                                                log::error!("clear local annotation: {error:#}");
+                                            }
+                                            navigation::notify_annotations_changed(cx);
+                                            cx.stop_propagation();
+                                        },
+                                    ),
+                                ),
+                        );
+                    }
+                    panel
+                })
+        })
+    }
+
     /// Контекстное меню строки стиха. Мутации — через shell; о результате
     /// панели узнают событием AnnotationsChanged.
     fn verse_context_menu(
@@ -1416,51 +1485,27 @@ impl ReaderPanel {
         let (Some(module), Some(book)) = (module.clone(), book) else {
             return menu;
         };
-        let activated = navigation::VerseActivated {
-            module: module.clone(),
-            book,
-            chapter,
-            verse,
-            book_title: book_title.to_owned(),
-            book_short: book_short.to_owned(),
-        };
-        let word_location = activated.clone();
-        let mut menu = menu
-            .item(
-                PopupMenuItem::new(crate::i18n::tr_static("Слово")).on_click(move |_, _, cx| {
-                    let word = word.as_ref().map(|token| {
-                        Box::new(shell::describe_word(
-                            app_services(cx),
-                            &word_location.module,
-                            book,
-                            &word_location.book_title,
-                            chapter,
-                            verse,
-                            token,
-                        ))
-                    });
-                    navigation::request_open_verse_style_picker(
-                        cx,
-                        navigation::OpenVerseStylePicker {
-                            verse: word_location.clone(),
-                            word,
-                            word_scope: true,
-                        },
-                    );
-                }),
-            )
-            .item(
-                PopupMenuItem::new(crate::i18n::tr_static("Стих")).on_click(move |_, _, cx| {
-                    navigation::request_open_verse_style_picker(
-                        cx,
-                        navigation::OpenVerseStylePicker {
-                            verse: activated.clone(),
-                            word: None,
-                            word_scope: false,
-                        },
-                    );
-                }),
-            );
+        let mut menu = menu;
+        if let Some(token) = &word {
+            menu = menu.item(Self::local_style_item(
+                "Цвет слова",
+                format!("word-{}-{}-{}", book.0, chapter, verse),
+                AnchoredRef {
+                    module: module.clone(),
+                    reference: VerseRef::single(book, chapter, verse),
+                    word_index: Some(token.word_index_in_verse),
+                },
+            ));
+        }
+        menu = menu.item(Self::local_style_item(
+            "Цвет стиха",
+            format!("verse-{}-{}-{}", book.0, chapter, verse),
+            AnchoredRef {
+                module: module.clone(),
+                reference: VerseRef::single(book, chapter, verse),
+                word_index: None,
+            },
+        ));
         // Теги стиха (этап 21): модальный пикер активной вкладки.
         menu = menu.item(
             PopupMenuItem::new(crate::i18n::tr_static("Тег стиха…")).on_click({
@@ -1755,6 +1800,15 @@ impl ReaderPanel {
                                 chapter,
                                 verse,
                                 &token,
+                            );
+                            let usage_description = description.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(crate::i18n::tr_static(
+                                    "График употребляемости",
+                                ))
+                                .on_click(move |_, _, cx| {
+                                    crate::usage::open_word_usage(usage_description.clone(), cx);
+                                }),
                             );
                             if description.strong_entry.is_some() {
                                 if let (Some(strong), Some(dict)) =
@@ -2075,20 +2129,20 @@ impl ReaderPanel {
             .child(translation)
             .child(place)
             .child(
-                Button::new("reader-prev-chapter")
+                Button::new("reader-history-back")
                     .xsmall()
                     .icon(gpui_kit::component::IconName::ChevronLeft)
-                    .tooltip(crate::i18n::tr_static("Предыдущая глава"))
-                    .disabled(self.chapter_target(-1).is_none())
-                    .on_click(cx.listener(|this, _, _, cx| this.move_chapter(-1, cx))),
+                    .tooltip(crate::i18n::tr_static("Назад"))
+                    .disabled(!navigation::history_can_back(cx))
+                    .on_click(|_, _, cx| navigation::history_go_back(cx)),
             )
             .child(
-                Button::new("reader-next-chapter")
+                Button::new("reader-history-forward")
                     .xsmall()
                     .icon(gpui_kit::component::IconName::ChevronRight)
-                    .tooltip(crate::i18n::tr_static("Следующая глава"))
-                    .disabled(self.chapter_target(1).is_none())
-                    .on_click(cx.listener(|this, _, _, cx| this.move_chapter(1, cx))),
+                    .tooltip(crate::i18n::tr_static("Вперёд"))
+                    .disabled(!navigation::history_can_forward(cx))
+                    .on_click(|_, _, cx| navigation::history_go_forward(cx)),
             )
     }
 

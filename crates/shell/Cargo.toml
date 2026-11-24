@@ -16,6 +16,7 @@ log.workspace = true
 parking_lot.workspace = true
 
 uuid.workspace = true
+chrono.workspace = true
 tempfile = "3"
 walkdir = "2"
 base64 = "0.22"

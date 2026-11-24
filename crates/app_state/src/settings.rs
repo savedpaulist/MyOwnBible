@@ -43,6 +43,10 @@ pub struct Settings {
     /// assets/themes/everforest.json; неизвестное имя — мягкий откат
     /// к дефолтной.
     pub theme: String,
+    /// Базовый фон для пяти автоматически собранных гармонических тем.
+    /// Хранится отдельно от выбранной темы, чтобы варианты можно было
+    /// пересобрать и после перезапуска приложения.
+    pub theme_generator_background: String,
     /// Левая менюшка свёрнута в узкую полосу иконок (этап 15).
     pub sidebar_collapsed: bool,
     /// Выбранный пункт левой менюшки (этап 15):
@@ -147,6 +151,7 @@ impl Default for Settings {
             link_open_mode: LinkOpenMode::default(),
             preferred_strongs_dictionary: None,
             theme: default_theme(),
+            theme_generator_background: "#272e33".to_string(),
             sidebar_collapsed: false,
             sidebar_section: "dictionaries".to_string(),
             sidebar_visible: true,

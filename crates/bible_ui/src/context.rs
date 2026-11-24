@@ -17,23 +17,19 @@ use gpui_kit::component::IndexPath;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::collapsible::Collapsible;
-use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState, ColorSelect};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{Textarea, TextareaState};
-use gpui_kit::component::popover::Popover;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use bible_domain::annotations::AnnotationKind;
 use bible_domain::content::{ContentBlock, ContentInline, TextMarks};
 use bible_domain::ids::{AnchoredRef, ModuleId, VerseRef};
 use bible_domain::link::LinkTarget;
 use bible_domain::ports::{ModuleCatalog as _, ModuleKind};
 
-use crate::annotations as palette;
 use crate::article;
 use crate::navigation::{self, VerseActivated, WordSelected};
 use crate::services::app_services;
@@ -45,45 +41,6 @@ const SECTION_TRANSLATIONS: usize = 1;
 const SECTION_CROSSREFS: usize = 2;
 const SECTION_COMMENTARIES: usize = 3;
 const SECTION_NOTES: usize = 4;
-
-/// К чему применяется оформление: к выбранному слову или ко всему стиху.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum StyleScope {
-    Word,
-    Verse,
-}
-
-impl StyleScope {
-    fn title(self) -> &'static str {
-        match self {
-            Self::Word => "Слово",
-            Self::Verse => "Стих",
-        }
-    }
-
-    fn id(self) -> &'static str {
-        match self {
-            Self::Word => "word-style",
-            Self::Verse => "verse-style",
-        }
-    }
-}
-
-/// Виды оформления в меню: подпись и вид аннотации (порядок строк меню).
-const STYLE_KINDS: [(&str, AnnotationKind); 3] = [
-    ("Фон", AnnotationKind::Highlight),
-    ("Цвет шрифта", AnnotationKind::WordColor),
-    ("Подчёркивание", AnnotationKind::Underline),
-];
-
-/// Один ColorPicker меню оформления: (область, вид) → состояние выбора.
-/// Цвета — `ThemeColor`-палитра ColorPicker gpui-kit (без своей палитры),
-/// в аннотацию пишется «#rrggbb».
-struct StyleSlot {
-    scope: StyleScope,
-    kind: AnnotationKind,
-    state: Entity<ColorPickerState>,
-}
 
 /// Пункт пикера Strong's-словаря: «Авто» или конкретный модуль
 /// (настройка `preferred_strongs_dictionary`, architecture.md §6.4).
@@ -147,10 +104,6 @@ pub struct ContextPanel {
     /// Раскрытые источники в секции «Комментарии» (ключ — модуль + индекс
     /// записи, переживает смену стиха).
     open_commentaries: BTreeSet<String>,
-    /// Программное открытие общего ColorPicker стиха из контекстного меню.
-    style_picker_open: Option<StyleScope>,
-    /// ColorPicker'ы меню «Оформление слова / стиха».
-    style_slots: Vec<StyleSlot>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -198,34 +151,13 @@ impl ContextPanel {
             )
         });
 
-        // ColorPicker'ы оформления: по одному на (слово|стих) × (фон|текст|
-        // подчёркивание). Выбор цвета (Change) сразу пишется в аннотацию.
-        let mut style_slots = Vec::new();
-        let mut style_subscriptions = Vec::new();
-        for scope in [StyleScope::Word, StyleScope::Verse] {
-            for (_, kind) in STYLE_KINDS {
-                let state = cx.new(|cx| ColorPickerState::new(window, cx));
-                style_subscriptions.push(cx.subscribe(
-                    &state,
-                    move |this, _, event: &ColorPickerEvent, cx| {
-                        let ColorPickerEvent::Change(Some(color)) = event else {
-                            return;
-                        };
-                        this.apply_style(scope, kind, *color, cx);
-                    },
-                ));
-                style_slots.push(StyleSlot { scope, kind, state });
-            }
-        }
-
-        let mut subscriptions = vec![
+        let subscriptions = vec![
             cx.subscribe_in(
                 &navigation::bus(cx),
                 window,
-                |this, _, event: &WordSelected, window, cx| {
+                |this, _, event: &WordSelected, _, cx| {
                     this.word = Some(event.description.clone());
                     this.open_section = Some(SECTION_WORD);
-                    this.sync_styles(window, cx);
                     cx.notify();
                 },
             ),
@@ -234,17 +166,6 @@ impl ContextPanel {
                 window,
                 |this, _, _: &navigation::WordCleared, _, cx| {
                     this.word = None;
-                    this.style_picker_open = None;
-                    cx.notify();
-                },
-            ),
-            // Оформление изменили где угодно (меню чтения, этот же
-            // ColorPicker) — подтянуть цвета в меню.
-            cx.subscribe_in(
-                &navigation::bus(cx),
-                window,
-                |this, _, _: &navigation::AnnotationsChanged, window, cx| {
-                    this.sync_styles(window, cx);
                     cx.notify();
                 },
             ),
@@ -282,26 +203,6 @@ impl ContextPanel {
                     cx.notify();
                 },
             ),
-            // Контекстное меню чтения открывает тот же ColorPicker, что и
-            // верхнее меню оформления, но сразу для выбранного стиха.
-            cx.subscribe_in(
-                &navigation::bus(cx),
-                window,
-                |this, _, event: &navigation::OpenVerseStylePicker, window, cx| {
-                    this.activate_verse(&event.verse, window, cx);
-                    this.open_section = Some(SECTION_WORD);
-                    if let Some(word) = &event.word {
-                        this.word = Some((**word).clone());
-                        this.sync_styles(window, cx);
-                    }
-                    this.style_picker_open = if event.word_scope {
-                        this.word.is_some().then_some(StyleScope::Word)
-                    } else {
-                        Some(StyleScope::Verse)
-                    };
-                    cx.notify();
-                },
-            ),
             cx.subscribe(
                 &navigation::bus(cx),
                 |this, _, _: &navigation::UserDataSynced, cx| {
@@ -335,8 +236,6 @@ impl ContextPanel {
             ),
         ];
 
-        subscriptions.extend(style_subscriptions);
-
         // Открылись при уже открытой книге — показываем контекст текущего
         // места чтения сразу.
         let location = app_services(cx).current_location.lock().clone();
@@ -356,11 +255,8 @@ impl ContextPanel {
             open_section: Some(SECTION_WORD),
             open_translations: BTreeSet::new(),
             open_commentaries: BTreeSet::new(),
-            style_picker_open: None,
-            style_slots,
             _subscriptions: subscriptions,
         };
-        this.sync_styles(window, cx);
         // Восстановленное место — сразу грузим комментарий к нему.
         let location = this.location.clone();
         if let Some(location) = location {
@@ -374,7 +270,7 @@ impl ContextPanel {
     fn activate_verse(
         &mut self,
         event: &VerseActivated,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let location = event.location();
@@ -399,7 +295,6 @@ impl ContextPanel {
         self.location = Some(location.clone());
         self.load_comment(&location, cx);
         self.load_chain_hits(cx);
-        self.sync_styles(window, cx);
     }
 
     /// Полоса «стих в цепочках» — из активного места (§6.8).
@@ -450,256 +345,6 @@ impl ContextPanel {
             log::error!("save verse comment failed: {error:#}");
         }
         navigation::notify_annotations_changed(cx);
-    }
-
-    // --- Оформление слова / стиха (ColorPicker) ----------------------------
-
-    /// Якорь оформления: слово (word_index токена) или стих целиком.
-    fn style_anchor(&self, scope: StyleScope) -> Option<AnchoredRef> {
-        match scope {
-            StyleScope::Word => {
-                let word = self.word.as_ref()?;
-                Some(AnchoredRef {
-                    module: word.module.clone(),
-                    reference: VerseRef::single(word.book, word.chapter, word.verse),
-                    word_index: Some(word.token.word_index_in_verse),
-                })
-            }
-            StyleScope::Verse => {
-                let location = self.location.as_ref()?;
-                Some(AnchoredRef {
-                    module: location.module.clone(),
-                    reference: VerseRef::single(location.book, location.chapter, location.verse),
-                    word_index: None,
-                })
-            }
-        }
-    }
-
-    /// Выбран цвет в ColorPicker: записать аннотацию («#rrggbb») и
-    /// перерисовать чтение.
-    fn apply_style(
-        &mut self,
-        scope: StyleScope,
-        kind: AnnotationKind,
-        color: Hsla,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(anchor) = self.style_anchor(scope) else {
-            return;
-        };
-        if let Err(error) =
-            shell::set_annotation(app_services(cx), anchor, kind, palette::to_hex(color))
-        {
-            log::error!("set {scope:?} annotation failed: {error:#}");
-        }
-        navigation::notify_annotations_changed(cx);
-    }
-
-    /// Снять один вид оформления (или все, если `kind` — None).
-    fn clear_style(
-        &mut self,
-        scope: StyleScope,
-        kind: Option<AnnotationKind>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(anchor) = self.style_anchor(scope) else {
-            return;
-        };
-        for (_, slot_kind) in STYLE_KINDS {
-            if kind.is_some_and(|kind| kind != slot_kind) {
-                continue;
-            }
-            if let Err(error) = shell::clear_annotation(app_services(cx), &anchor, slot_kind) {
-                log::error!("clear {scope:?} annotation failed: {error:#}");
-            }
-            if let Some(slot) = self
-                .style_slots
-                .iter()
-                .find(|slot| slot.scope == scope && slot.kind == slot_kind)
-            {
-                slot.state
-                    .update(cx, |state, cx| state.clear_value(window, cx));
-            }
-        }
-        navigation::notify_annotations_changed(cx);
-        cx.notify();
-    }
-
-    /// Привести ColorPicker'ы к сохранённому оформлению текущего слова и
-    /// стиха (молча: set_value/clear_value не шлют Change). Открытый
-    /// ColorPicker не трогаем — иначе он «борется» с перетаскиванием.
-    fn sync_styles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let word_marks: Vec<(AnnotationKind, String)> = match &self.word {
-            Some(word) => {
-                let index = word.token.word_index_in_verse;
-                shell::book_annotations(app_services(cx), &word.module, word.book)
-                    .marks_of(word.chapter, word.verse)
-                    .map(|marks| {
-                        marks
-                            .words
-                            .iter()
-                            .filter(|(i, _, _)| *i == index)
-                            .map(|(_, kind, color)| (*kind, color.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }
-            None => Vec::new(),
-        };
-        // (фон, подчёркивание, цвет текста) стиха.
-        let verse_marks: (Option<String>, Option<String>, Option<String>) = match &self.location {
-            Some(location) => {
-                shell::book_annotations(app_services(cx), &location.module, location.book)
-                    .marks_of(location.chapter, location.verse)
-                    .map(|marks| {
-                        (
-                            marks.highlight.clone(),
-                            marks.underline.clone(),
-                            marks.text_color.clone(),
-                        )
-                    })
-                    .unwrap_or_default()
-            }
-            None => Default::default(),
-        };
-
-        for slot in &self.style_slots {
-            if slot.state.read(cx).is_open() {
-                continue;
-            }
-            let wanted: Option<String> = match slot.scope {
-                StyleScope::Word => word_marks
-                    .iter()
-                    .find(|(kind, _)| *kind == slot.kind)
-                    .map(|(_, color)| color.clone()),
-                StyleScope::Verse => match slot.kind {
-                    AnnotationKind::Highlight => verse_marks.0.clone(),
-                    AnnotationKind::Underline => verse_marks.1.clone(),
-                    AnnotationKind::WordColor => verse_marks.2.clone(),
-                },
-            };
-            match wanted {
-                Some(name) => {
-                    let color = palette::base(&name, cx);
-                    slot.state
-                        .update(cx, |state, cx| state.set_value(color, window, cx));
-                }
-                None => {
-                    slot.state
-                        .update(cx, |state, cx| state.clear_value(window, cx));
-                }
-            }
-        }
-    }
-
-    /// Кнопка-меню «Оформление слова / стиха»: Popover со строками
-    /// «Фон / Текст / Подчёркивание» (ColorSelect с палитрой темы) и
-    /// кнопкой снятия.
-    fn render_style_menu(&self, scope: StyleScope, cx: &mut Context<Self>) -> AnyElement {
-        let rows: Vec<(&'static str, AnnotationKind, Entity<ColorPickerState>)> = STYLE_KINDS
-            .iter()
-            .filter_map(|(label, kind)| {
-                self.style_slots
-                    .iter()
-                    .find(|slot| slot.scope == scope && slot.kind == *kind)
-                    .map(|slot| (*label, *kind, slot.state.clone()))
-            })
-            .collect();
-        let weak = cx.entity().downgrade();
-        let id = scope.id();
-
-        let popover = Popover::new(SharedString::from(format!("{id}-popover")))
-            .trigger(
-                Button::new(SharedString::from(format!("{id}-button")))
-                    .outline()
-                    .xsmall()
-                    .label(crate::i18n::tr(cx, scope.title()))
-                    .icon(IconName::ChevronDown),
-            )
-            .content(move |_, window, cx| {
-                let muted = cx.theme().muted_foreground;
-                let mut menu = v_flex().w(px(300.)).gap_2().p_1();
-                for (label, kind, state) in &rows {
-                    let weak = weak.clone();
-                    let kind = *kind;
-                    menu = menu.child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .w(px(104.))
-                                    .flex_shrink_0()
-                                    .text_size(px(crate::ui_scale::panel_font_size(cx, 12.0)))
-                                    .text_color(muted)
-                                    .child(crate::i18n::tr(cx, label)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(ColorSelect::new(state).xsmall().w_full()),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("{id}-clear-{kind:?}")))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Close)
-                                    .tooltip(crate::i18n::tr(cx, "Снять"))
-                                    .on_click(move |_, window, cx| {
-                                        _ = weak.update(cx, |this, cx| {
-                                            this.clear_style(scope, Some(kind), window, cx);
-                                        });
-                                    }),
-                            ),
-                    );
-                }
-                let weak = weak.clone();
-                let _ = window;
-                menu.child(
-                    Button::new(SharedString::from(format!("{id}-clear-all")))
-                        .ghost()
-                        .xsmall()
-                        .label(crate::i18n::tr(cx, "Снять всё"))
-                        .on_click(move |_, window, cx| {
-                            _ = weak.update(cx, |this, cx| {
-                                this.clear_style(scope, None, window, cx);
-                            });
-                        }),
-                )
-            });
-        let open_weak = cx.entity().downgrade();
-        popover
-            .open(self.style_picker_open == Some(scope))
-            .on_open_change(move |open, _, cx| {
-                let _ = open_weak.update(cx, |this, cx| {
-                    if *open {
-                        this.style_picker_open = Some(scope);
-                    } else if this.style_picker_open == Some(scope) {
-                        this.style_picker_open = None;
-                    }
-                    cx.notify();
-                });
-            })
-            .into_any_element()
-    }
-
-    /// Полоса меню оформления: слово (если выбрано) и стих (если активен).
-    fn render_style_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let mut bar = h_flex().w_full().flex_wrap().gap_2().items_center();
-        let mut any = false;
-        if self.word.is_some() {
-            bar = bar.child(self.render_style_menu(StyleScope::Word, cx));
-            any = true;
-        }
-        if self.location.is_some() {
-            bar = bar.child(self.render_style_menu(StyleScope::Verse, cx));
-            any = true;
-        }
-        any.then(|| bar.into_any_element())
     }
 
     // --- Секция «Слово» ----------------------------------------------------
@@ -938,6 +583,20 @@ impl ContextPanel {
                     }),
             );
         }
+        let usage_description = description.clone();
+        actions = actions.child(
+            Button::new("word-usage-chart")
+                .ghost()
+                .xsmall()
+                .label(crate::i18n::tr(cx, "График употребляемости"))
+                .tooltip(crate::i18n::tr(
+                    cx,
+                    "Количество употреблений по книгам текущего модуля",
+                ))
+                .on_click(move |_, _, cx| {
+                    crate::usage::open_word_usage(usage_description.clone(), cx);
+                }),
+        );
         sections = sections.child(actions);
 
         // Закрепление Strong's-словаря (перенос strong picker форка):
@@ -1628,9 +1287,8 @@ impl Render for ContextPanel {
 
         let mut body = v_flex().size_full().min_w_0();
         body = body.child(self.render_header(cx));
-        if let Some(style_bar) = self.render_style_bar(cx) {
-            body = body.child(style_bar);
-        }
+        // Оформление слова/стиха открывается локально у контекстного меню
+        // чтения и больше не занимает место в правой панели.
         if let Some(strip) = self.render_chains_strip(cx) {
             body = body.child(strip);
         }

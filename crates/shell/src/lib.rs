@@ -29,8 +29,8 @@ pub use mybible::BookEntry;
 pub use navigation::NavigationCommand;
 pub use search::{SearchHit, SearchResultsViewModel, search_bible};
 pub use services::{
-    AppServices, BookViewModel, CurrentLocation, VerseItem, WordDescription, describe_word,
-    open_book, redescribe,
+    AppServices, BookViewModel, CurrentLocation, VerseItem, WordDescription, WordUsageBook,
+    WordUsageHit, WordUsageViewModel, describe_word, open_book, redescribe, word_usage,
 };
 pub use verse_context::{VerseContextViewModel, verse_context};
 

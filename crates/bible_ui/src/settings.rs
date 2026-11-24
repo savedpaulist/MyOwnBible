@@ -49,6 +49,7 @@ pub struct SettingsPanel {
     focus_handle: FocusHandle,
     modules_dir_input: Entity<InputState>,
     notes_dir_input: Entity<InputState>,
+    theme_background_input: Entity<InputState>,
     status: Option<String>,
     pages: Option<Vec<SettingPage>>,
     system_fonts: Option<Vec<String>>,
@@ -148,6 +149,11 @@ impl SettingsPanel {
                         .unwrap_or_default(),
                 )
         });
+        let theme_background_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("#272E33")
+                .default_value(settings.theme_generator_background.clone())
+        });
         let settings_bus = navigation::bus(cx);
         let settings_subscription = cx.subscribe(
             &settings_bus,
@@ -161,11 +167,50 @@ impl SettingsPanel {
             focus_handle: cx.focus_handle(),
             modules_dir_input,
             notes_dir_input,
+            theme_background_input,
             status: None,
             pages: None,
             system_fonts: None,
             _subscriptions: vec![settings_subscription],
         }
+    }
+
+    fn generated_theme_item(panel: &WeakEntity<Self>, input: &Entity<InputState>) -> SettingItem {
+        let panel = panel.clone();
+        let input = input.clone();
+        SettingItem::render(move |_options, _window, cx| {
+            let panel = panel.clone();
+            let input = input.clone();
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().min_w_0().child(Input::new(&input)))
+                .child(
+                    Button::new("generate-colour-harmonies")
+                        .xsmall()
+                        .label(crate::i18n::tr(cx, "Собрать 5 вариантов"))
+                        .on_click(move |_, _, cx| {
+                            let value = input.read(cx).value().to_string();
+                            let result = crate::theme::generate_from_background(&value, cx);
+                            let _ = panel.update(cx, |this, cx| {
+                                match result {
+                                    Ok(names) => {
+                                        this.status = Some(format!(
+                                            "Создано {} гармоний. Выберите одну из «Палитра …» в списке тем.",
+                                            names.len()
+                                        ));
+                                        navigation::notify_settings_changed(cx);
+                                    }
+                                    Err(error) => {
+                                        this.status = Some(format!("Не удалось собрать палитры: {error}"));
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        }),
+                )
+        })
     }
 
     /// Сохранить изменение до публикации события. Ошибки не проглатываются:
@@ -824,6 +869,8 @@ impl SettingsPanel {
                                 shell::themes::storage_dir().display()
                             )
                         }),
+                        Self::generated_theme_item(&panel, &self.theme_background_input)
+                            .description(crate::i18n::tr(cx, "Введите базовый фон (#RGB или #RRGGBB). Модель построит пять спокойных вариантов по цветовому кругу: аналоговый, комплементарный, раздельно-комплементарный, триадный и тетрадный. Поверхности выводятся из фона, акценты ограничены по насыщенности и проверяются на читаемость.")),
                         SettingItem::new(
                             crate::i18n::tr(cx, "Масштаб интерфейса"),
                             SettingField::dropdown(

@@ -184,17 +184,12 @@ impl WorkspaceView {
         )
         .detach();
 
-        // Перед показом пикера гарантируем, что правая панель «Verse»
-        // существует и раскрыта; новый экземпляр получает повтор события.
         cx.subscribe_in(
             &crate::navigation::bus(cx),
             window,
-            |this, _, event: &crate::navigation::OpenVerseStylePicker, window, cx| {
-                let created =
-                    this.reveal_panel(ContextPanel::NAME, DockPlacement::Right, window, cx);
-                if created {
-                    crate::navigation::bus(cx).update(cx, |_, cx| cx.emit(event.clone()));
-                }
+            |this, _, request: &crate::navigation::OpenBookInNewTab, window, cx| {
+                let reader = Self::spawn_reading_tab(None, window, cx, &this.dock_area);
+                reader.update(cx, |reader, cx| reader.open_book(&request.0, window, cx));
             },
         )
         .detach();

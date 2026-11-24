@@ -1,14 +1,17 @@
 //! Левая панель с раскрываемой полосой разделов.
 
 use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::list::ListItem;
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::tree::{Tree, TreeEvent, TreeItem, TreeState};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -38,6 +41,105 @@ enum Section {
 struct SidebarCommentaryRow {
     reference: VerseRef,
     label: String,
+}
+
+#[derive(Clone)]
+struct NoteDrag {
+    relpath: String,
+    title: String,
+}
+
+struct NoteDragPreview(NoteDrag);
+
+impl Render for NoteDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .shadow_lg()
+            .bg(cx.theme().background)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(self.0.title.clone())
+    }
+}
+
+#[derive(Default)]
+struct NoteTreeDirectory {
+    directories: BTreeMap<String, NoteTreeDirectory>,
+    notes: Vec<shell::notes::NoteSummary>,
+}
+
+fn note_tree_items(
+    folders: &[shell::notes::NoteFolder],
+    notes: &[shell::notes::NoteSummary],
+    expanded: &HashSet<String>,
+) -> Vec<TreeItem> {
+    fn directory_mut<'a>(
+        mut directory: &'a mut NoteTreeDirectory,
+        components: impl Iterator<Item = &'a str>,
+    ) -> &'a mut NoteTreeDirectory {
+        for component in components {
+            directory = directory
+                .directories
+                .entry(component.to_owned())
+                .or_default();
+        }
+        directory
+    }
+
+    fn build(
+        directory: NoteTreeDirectory,
+        parent: &str,
+        expanded: &HashSet<String>,
+    ) -> Vec<TreeItem> {
+        let mut items = Vec::new();
+        for (name, child) in directory.directories {
+            let relpath = if parent.is_empty() {
+                name.clone()
+            } else {
+                format!("{parent}/{name}")
+            };
+            let id = format!("folder:{relpath}");
+            let mut children = build(child, &relpath, expanded);
+            if children.is_empty() {
+                children
+                    .push(TreeItem::new(format!("empty:{relpath}"), "Пустая папка").disabled(true));
+            }
+            items.push(
+                TreeItem::new(id.clone(), name)
+                    .children(children)
+                    .expanded(expanded.contains(&id)),
+            );
+        }
+        let mut notes = directory.notes;
+        notes.sort_by(|a, b| {
+            a.title
+                .to_lowercase()
+                .cmp(&b.title.to_lowercase())
+                .then_with(|| a.relpath.cmp(&b.relpath))
+        });
+        items.extend(
+            notes
+                .into_iter()
+                .map(|note| TreeItem::new(format!("note:{}", note.relpath), note.title)),
+        );
+        items
+    }
+
+    let mut root = NoteTreeDirectory::default();
+    for folder in folders {
+        directory_mut(&mut root, folder.relpath.split('/'));
+    }
+    for note in notes {
+        let mut components = note.relpath.split('/').collect::<Vec<_>>();
+        components.pop();
+        directory_mut(&mut root, components.into_iter())
+            .notes
+            .push(note.clone());
+    }
+    build(root, "", expanded)
 }
 
 impl Section {
@@ -98,9 +200,13 @@ pub struct SidebarView {
     chains: Entity<crate::chains::ChainsPanel>,
     questions: Entity<crate::questions::QuestionsPanel>,
     /// Заметки (этап 15.2): список хранилища; клик открывает заметку
-    /// вкладкой в центре (note_tab.rs). Создание — полем внизу списка.
+    /// вкладкой в центре (note_tab.rs). Создание — действиями над списком.
     notes_list: Vec<shell::notes::NoteSummary>,
+    note_folders: Vec<shell::notes::NoteFolder>,
+    notes_tree: Entity<TreeState>,
+    expanded_note_folders: HashSet<String>,
     new_note_input: Entity<InputState>,
+    new_folder_input: Entity<InputState>,
     new_tag_input: Entity<InputState>,
     commentary_module: Option<ModuleId>,
     commentary_rows: Arc<Vec<SidebarCommentaryRow>>,
@@ -127,6 +233,7 @@ impl SidebarView {
         let dictionaries = cx.new(|cx| DictionaryBrowser::new(window, cx));
         let chains = cx.new(|cx| crate::chains::ChainsPanel::new(window, cx));
         let questions = cx.new(|cx| crate::questions::QuestionsPanel::new(window, cx));
+        let notes_tree = cx.new(|cx| TreeState::new(cx));
         let tag_color = cx.new(|cx| ColorPickerState::new(window, cx));
         let color_subscription =
             cx.subscribe(&tag_color, |this, _, event: &ColorPickerEvent, cx| {
@@ -140,10 +247,27 @@ impl SidebarView {
             InputState::new(window, cx)
                 .placeholder(crate::i18n::tr_static("Папка/Название новой заметки"))
         });
+        let new_folder_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::tr_static("Название новой папки"))
+        });
         let new_tag_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(crate::i18n::tr_static("Имя нового тега…"))
         });
         let subscriptions = vec![
+            cx.subscribe(&notes_tree, |this, _, event: &TreeEvent, cx| {
+                let (id, expanded) = match event {
+                    TreeEvent::Expanded(id) => (id.to_string(), true),
+                    TreeEvent::Collapsed(id) => (id.to_string(), false),
+                };
+                if id.starts_with("folder:") {
+                    if expanded {
+                        this.expanded_note_folders.insert(id);
+                    } else {
+                        this.expanded_note_folders.remove(&id);
+                    }
+                }
+                cx.notify();
+            }),
             // Enter в поле имени тега — переименование открытого тега.
             cx.subscribe_in(
                 &tag_rename_input,
@@ -163,6 +287,15 @@ impl SidebarView {
                     if let InputEvent::PressEnter { .. } = event {
                         let name = input.read(cx).value().to_string();
                         this.create_note(name, window, cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &new_folder_input,
+                window,
+                |this, input, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        this.create_note_folder(input.read(cx).value().to_string(), window, cx);
                     }
                 },
             ),
@@ -259,7 +392,11 @@ impl SidebarView {
             chains,
             questions,
             notes_list: Vec::new(),
+            note_folders: Vec::new(),
+            notes_tree,
+            expanded_note_folders: HashSet::new(),
             new_note_input,
+            new_folder_input,
             new_tag_input,
             commentary_module: None,
             commentary_rows: Arc::new(Vec::new()),
@@ -402,10 +539,21 @@ impl SidebarView {
     fn reload_notes(&mut self, cx: &mut Context<Self>) {
         let Some(index) = Self::notes_index(cx) else {
             self.notes_list = Vec::new();
+            self.note_folders = Vec::new();
+            self.notes_tree
+                .update(cx, |tree, cx| tree.set_items(Vec::new(), cx));
             cx.notify();
             return;
         };
         self.notes_list = shell::notes::list_notes(&index).unwrap_or_default();
+        self.note_folders = shell::notes::list_folders(&index).unwrap_or_default();
+        let tree_items = note_tree_items(
+            &self.note_folders,
+            &self.notes_list,
+            &self.expanded_note_folders,
+        );
+        self.notes_tree
+            .update(cx, |tree, cx| tree.set_items(tree_items, cx));
         cx.notify();
     }
 
@@ -465,13 +613,15 @@ impl SidebarView {
     /// Создать заметку и открыть её вкладкой в центре.
     fn create_note(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         let name = name.trim().to_string();
-        if name.is_empty() {
-            return;
-        }
         let Some(index) = Self::notes_index(cx) else {
             return;
         };
-        match shell::notes::create_note(&index, &name) {
+        let result = if name.is_empty() {
+            shell::notes::create_untitled_note(&index)
+        } else {
+            shell::notes::create_note(&index, &name)
+        };
+        match result {
             Ok(doc) => {
                 self.new_note_input.update(cx, |input, cx| {
                     input.set_value("", window, cx);
@@ -484,13 +634,34 @@ impl SidebarView {
         cx.notify();
     }
 
-    // --- Теги (этап 21) ---------------------------------------------------
-
-    fn create_tag(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn create_note_folder(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         let name = name.trim();
         if name.is_empty() {
             return;
         }
+        let Some(index) = Self::notes_index(cx) else {
+            return;
+        };
+        match shell::notes::create_folder(&index, name) {
+            Ok(_) => {
+                self.new_folder_input.update(cx, |input, cx| {
+                    input.set_value("", window, cx);
+                });
+                self.reload_notes(cx);
+            }
+            Err(error) => log::error!("create note folder {name}: {error:#}"),
+        }
+    }
+
+    // --- Теги (этап 21) ---------------------------------------------------
+
+    fn create_tag(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let entered = name.trim();
+        let name = if entered.is_empty() {
+            crate::i18n::tr_static("Новый тег").as_ref()
+        } else {
+            entered
+        };
         match shell::tags::create_tag(app_services(cx), name, "green") {
             Ok(_) => {
                 self.new_tag_input.update(cx, |input, cx| {
@@ -691,30 +862,30 @@ impl SidebarView {
             .w_full()
             .h_full()
             .min_h_0()
-            .child(list.overflow_y_scrollbar())
             .child(
-                h_flex()
+                v_flex()
                     .w_full()
                     .gap_1()
                     .p_2()
-                    .border_t_1()
+                    .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.new_tag_input).small()),
-                    )
-                    .child(
-                        gpui_kit::component::button::Button::new("sidebar-tag-create")
-                            .xsmall()
-                            .label(crate::i18n::tr(cx, "Добавить тег"))
+                        Button::new("sidebar-tag-create")
+                            .small()
+                            .label(crate::i18n::tr(cx, "+ Новый тег"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let name = this.new_tag_input.read(cx).value().to_string();
                                 this.create_tag(name, window, cx);
                             })),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .child(Input::new(&self.new_tag_input).small()),
                     ),
             )
+            .child(list.overflow_y_scrollbar())
             .into_any_element()
     }
 
@@ -960,8 +1131,8 @@ impl SidebarView {
             .into_any_element()
     }
 
-    /// Список заметок хранилища (этап 15.2): клик открывает заметку
-    /// вкладкой в центре; внизу — создание новой.
+    /// Список заметок хранилища: действия создания сверху, затем реальные
+    /// папки (алфавитно), затем Markdown-файлы.
     fn render_notes(&self, cx: &mut Context<Self>) -> AnyElement {
         if Self::notes_index(cx).is_none() {
             return v_flex()
@@ -978,85 +1149,240 @@ impl SidebarView {
                 )
                 .into_any_element();
         }
-        let mut list = v_flex()
-            .id("sidebar-notes")
-            .w_full()
-            .min_w_0()
-            .flex_1()
-            .min_h_0()
-            .p_1()
-            .gap(px(1.));
-        if self.notes_list.is_empty() {
-            list = list.child(
-                div()
-                    .p_2()
-                    .text_size(px(crate::ui_scale::left_font_size(cx, 14.0)))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(crate::i18n::tr_static(
-                        "Заметок пока нет — создайте первую в поле ниже.",
-                    )),
-            );
-        }
-        for (index, summary) in self.notes_list.iter().enumerate() {
-            let relpath = summary.relpath.clone();
-            list = list.child(
-                div()
-                    .id(ElementId::Name(
-                        format!("sidebar-note-{}", summary.relpath).into(),
-                    ))
-                    .w_full()
-                    .min_w_0()
-                    .px_2()
-                    .py(px(2.))
-                    .rounded_md()
-                    .bg(crate::ui_scale::row_background(index, cx))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
-                    .child(
-                        div()
-                            .text_size(px(crate::ui_scale::left_font_size(cx, 14.0)))
-                            .text_color(cx.theme().foreground)
-                            .child(summary.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(crate::ui_scale::left_font_size(cx, 12.0)))
-                            .text_color(cx.theme().muted_foreground)
-                            .child(summary.relpath.clone()),
-                    )
+        let folders = self.note_folders.clone();
+        let tree = Tree::new(&self.notes_tree, move |index, entry, _, _, cx| {
+            let id = entry.item().id.to_string();
+            let label = entry.item().label.clone();
+            let depth = entry.depth();
+            let is_folder = id.starts_with("folder:");
+            let is_note = id.starts_with("note:");
+            let is_empty = id.starts_with("empty:");
+            let mut row = h_flex()
+                .id(("note-tree-row", index))
+                .w_full()
+                .h(px(26.))
+                .min_w_0()
+                .pl(px(4. + depth as f32 * 14.))
+                .pr_1()
+                .gap_1()
+                .items_center()
+                .cursor_pointer()
+                .child(
+                    div()
+                        .w(px(14.))
+                        .flex_shrink_0()
+                        .children(is_folder.then(|| {
+                            Icon::new(if entry.is_expanded() {
+                                gpui_kit::assets::IconName::ChevronDown
+                            } else {
+                                gpui_kit::assets::IconName::ChevronRight
+                            })
+                            .xsmall()
+                        })),
+                )
+                .child(
+                    Icon::new(if is_folder {
+                        gpui_kit::assets::IconName::Folder
+                    } else {
+                        gpui_kit::assets::IconName::FileText
+                    })
+                    .xsmall()
+                    .text_color(if is_folder {
+                        cx.theme().accent
+                    } else {
+                        cx.theme().muted_foreground
+                    }),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(px(crate::ui_scale::left_font_size(cx, 13.0)))
+                        .text_color(if is_empty {
+                            cx.theme().muted_foreground
+                        } else {
+                            cx.theme().foreground
+                        })
+                        .child(label.clone()),
+                );
+            if is_folder {
+                let target = id.trim_start_matches("folder:").to_owned();
+                row = row
+                    .drag_over::<NoteDrag>(|row, _, _, cx| row.bg(cx.theme().tokens.drop_target))
+                    .on_drop(move |note: &NoteDrag, _, cx| {
+                        let Some(notes) = shell::notes::current(app_services(cx)) else {
+                            return;
+                        };
+                        match shell::notes::move_note(&notes, &note.relpath, &target) {
+                            Ok(note) => navigation::request_open_note(cx, note.relpath),
+                            Err(error) => log::error!("move note by drag: {error:#}"),
+                        }
+                    });
+            } else if is_note {
+                let relpath = id.trim_start_matches("note:").to_owned();
+                let drag = NoteDrag {
+                    relpath: relpath.clone(),
+                    title: label.to_string(),
+                };
+                row = row
+                    .on_drag(drag, |note, _, _, cx| {
+                        cx.new(|_| NoteDragPreview(note.clone()))
+                    })
                     .on_click(move |_, _, cx| {
                         navigation::request_open_note(cx, relpath.clone());
-                    }),
+                    });
+            }
+            ListItem::new(("note-tree-item", index)).child(row)
+        })
+        .context_menu(move |_, entry, mut menu, _, _| {
+            let id = entry.item().id.to_string();
+            if !id.starts_with("note:") {
+                return menu;
+            }
+            let relpath = id.trim_start_matches("note:").to_owned();
+            let folders = folders.clone();
+            menu = menu.scrollable(true);
+            let root_note = relpath.clone();
+            menu = menu.item(
+                PopupMenuItem::new("Перенести в корень").on_click(move |_, _, cx| {
+                    let Some(notes) = shell::notes::current(app_services(cx)) else {
+                        return;
+                    };
+                    if let Err(error) = shell::notes::move_note(&notes, &root_note, "") {
+                        log::error!("move note to root: {error:#}");
+                    }
+                }),
             );
-        }
+            if !folders.is_empty() {
+                menu = menu.separator();
+            }
+            for folder in &folders {
+                let note = relpath.clone();
+                let target = folder.relpath.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(format!("Перенести в {}", folder.relpath)).on_click(
+                        move |_, _, cx| {
+                            let Some(notes) = shell::notes::current(app_services(cx)) else {
+                                return;
+                            };
+                            if let Err(error) = shell::notes::move_note(&notes, &note, &target) {
+                                log::error!("move note from menu: {error:#}");
+                            }
+                        },
+                    ),
+                );
+            }
+            menu
+        });
+        let templates = Self::notes_index(cx)
+            .and_then(|index| shell::notes::load_templates(&index).ok())
+            .unwrap_or_default();
+        let template_title = self.new_note_input.read(cx).value().to_string();
+        let explorer: AnyElement = if self.notes_list.is_empty() && self.note_folders.is_empty() {
+            div()
+                .flex_1()
+                .min_h_0()
+                .p_2()
+                .text_size(px(crate::ui_scale::left_font_size(cx, 13.0)))
+                .text_color(cx.theme().muted_foreground)
+                .child(crate::i18n::tr_static(
+                    "Заметок пока нет — создайте первую выше.",
+                ))
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(tree)
+                .into_any_element()
+        };
         v_flex()
             .w_full()
             .h_full()
             .min_h_0()
-            .child(list.overflow_y_scrollbar())
             .child(
-                h_flex()
+                v_flex()
                     .w_full()
                     .gap_1()
                     .p_2()
-                    .border_t_1()
+                    .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.new_note_input).small()),
-                    )
-                    .child(
-                        gpui_kit::component::button::Button::new("sidebar-note-create")
-                            .xsmall()
-                            .label("+")
+                        Button::new("sidebar-note-create")
+                            .small()
+                            .label(crate::i18n::tr(cx, "+ Новая заметка"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let name = this.new_note_input.read(cx).value().to_string();
                                 this.create_note(name, window, cx);
                             })),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .child(Input::new(&self.new_note_input).small()),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(Input::new(&self.new_folder_input).small()),
+                            )
+                            .child(
+                                Button::new("sidebar-folder-create")
+                                    .xsmall()
+                                    .label(crate::i18n::tr(cx, "+ Новая папка"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let name = this.new_folder_input.read(cx).value().to_string();
+                                        this.create_note_folder(name, window, cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("sidebar-note-template")
+                                    .xsmall()
+                                    .label("Создать по шаблону")
+                                    .dropdown_menu(move |mut menu, _, _| {
+                                        for template in &templates {
+                                            let template = template.clone();
+                                            let entered_title = if template_title.trim().is_empty() {
+                                                crate::i18n::tr_static("Новая заметка").to_string()
+                                            } else {
+                                                template_title.clone()
+                                            };
+                                            menu = menu.item(PopupMenuItem::new(template.name.clone()).on_click(
+                                                move |_, _, cx| {
+                                                    let Some(index) = shell::notes::current(app_services(cx)) else { return };
+                                                    match shell::notes::create_note_from_template(&index, &template, &entered_title) {
+                                                        Ok(note) => navigation::request_open_note(cx, note.relpath),
+                                                        Err(error) => log::error!("create from template: {error:#}"),
+                                                    }
+                                                },
+                                            ));
+                                        }
+                                        menu
+                                    }),
+                            )
+                            .child(
+                                Button::new("sidebar-note-template-settings")
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Шаблоны…")
+                                    .on_click(|_, _, cx| crate::note_templates::open(cx)),
+                            ),
                     ),
             )
+            .child(explorer)
             .into_any_element()
     }
 
@@ -1079,7 +1405,8 @@ impl Render for SidebarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::assets::IconName;
         let collapsed = self.collapsed;
-        let accent = cx.theme().accent;
+        let rail_background = cx.theme().sidebar;
+        let rail_foreground = cx.theme().sidebar_foreground;
         let menu = [
             Section::Dictionaries,
             Section::Notes,
@@ -1089,27 +1416,37 @@ impl Render for SidebarView {
             Section::Questions,
         ];
         let icon_size = crate::ui_scale::icon_size(cx);
-        let rail_button = |id: &'static str, icon, label: SharedString, show_label: bool| {
-            let tooltip = label.clone();
-            h_flex()
-                .id(id)
-                .w_full()
-                .h(px(42.))
-                .rounded_md()
-                .cursor_pointer()
-                .hover(|style| style.bg(accent.opacity(0.16)))
-                .tooltip(move |window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
-                })
-                .child(
-                    h_flex()
-                        .w(px(42.))
-                        .flex_shrink_0()
-                        .justify_center()
-                        .child(Icon::new(icon).size(icon_size)),
-                )
-                .children(show_label.then(|| div().child(label)))
-        };
+        let rail_button =
+            |id: &'static str, icon, label: SharedString, show_label: bool, inverted: bool| {
+                let tooltip = label.clone();
+                h_flex()
+                    .id(id)
+                    .w_full()
+                    .h(px(42.))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_color(rail_foreground)
+                    // Hover is intentionally a full colour inversion, not a
+                    // subtle translucent wash: it remains visible in low-contrast
+                    // grey themes and to peripheral vision. When a section is
+                    // open, its button keeps this exact inverted state.
+                    .when(inverted, |button| {
+                        button.bg(rail_foreground).text_color(rail_background)
+                    })
+                    .hover(move |style| style.bg(rail_foreground).text_color(rail_background))
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(tooltip.clone())
+                            .build(window, cx)
+                    })
+                    .child(
+                        h_flex()
+                            .w(px(42.))
+                            .flex_shrink_0()
+                            .justify_center()
+                            .child(Icon::new(icon).size(icon_size)),
+                    )
+                    .children(show_label.then(|| div().child(label)))
+            };
         let rail = v_flex()
             .h_full()
             .flex_shrink_0()
@@ -1120,11 +1457,14 @@ impl Render for SidebarView {
             .border_r_1()
             .border_color(cx.theme().border)
             .children(menu.into_iter().map(|item| {
-                rail_button(item.as_settings(), item.icon(), item.label(cx), !collapsed)
-                    .when(self.content_visible && self.section == item, |button| {
-                        button.bg(accent.opacity(0.18))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_section(item, cx)))
+                rail_button(
+                    item.as_settings(),
+                    item.icon(),
+                    item.label(cx),
+                    !collapsed,
+                    self.content_visible && self.section == item,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.select_section(item, cx)))
             }))
             .child(div().flex_1())
             .child(
@@ -1133,6 +1473,7 @@ impl Render for SidebarView {
                     IconName::Settings,
                     crate::i18n::tr(cx, "Настройки"),
                     !collapsed,
+                    false,
                 )
                 .on_click(|_, _, cx| crate::settings::open_settings_window(cx)),
             )
@@ -1153,6 +1494,7 @@ impl Render for SidebarView {
                         },
                     ),
                     false,
+                    false,
                 )
                 .justify_center()
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_collapsed(cx))),
@@ -1162,6 +1504,7 @@ impl Render for SidebarView {
                     "toggle-sidebar-content",
                     IconName::PanelLeft,
                     crate::i18n::tr(cx, "Показать или скрыть содержимое"),
+                    false,
                     false,
                 )
                 .justify_center()

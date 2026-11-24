@@ -35,6 +35,11 @@ pub struct OpenBook {
     pub verse: Option<u16>,
 }
 
+/// Открыть место всегда в новой вкладке, независимо от общей настройки
+/// поведения ссылок. Используется списком стихов в графике употребляемости.
+#[derive(Debug, Clone)]
+pub struct OpenBookInNewTab(pub OpenBook);
+
 /// Запрос открыть справочный модуль (словарь, комментарии, ссылки) —
 /// исполняет панель «Словарь».
 #[derive(Debug, Clone)]
@@ -266,6 +271,7 @@ impl Global for HistoryBus {}
 pub struct Navigation;
 
 impl EventEmitter<OpenBook> for Navigation {}
+impl EventEmitter<OpenBookInNewTab> for Navigation {}
 impl EventEmitter<OpenModule> for Navigation {}
 impl EventEmitter<OpenCommentary> for Navigation {}
 impl EventEmitter<WordCleared> for Navigation {}
@@ -421,6 +427,10 @@ pub fn notify_reader_activated(cx: &mut App, reader: WeakEntity<crate::reader::R
 /// Опубликовать запрос на открытие книги.
 pub fn request_open_book(cx: &mut App, request: OpenBook) {
     bus(cx).update(cx, |_, cx| cx.emit(request));
+}
+
+pub fn request_open_book_in_new_tab(cx: &mut App, request: OpenBook) {
+    bus(cx).update(cx, |_, cx| cx.emit(OpenBookInNewTab(request)));
 }
 
 /// Опубликовать запрос на открытие справочного модуля.

@@ -631,6 +631,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell",
+ "uuid",
 ]
 
 [[package]]
@@ -6077,6 +6078,7 @@ dependencies = [
  "app_state",
  "base64 0.22.1",
  "bible_domain",
+ "chrono",
  "getrandom 0.4.3",
  "log",
  "mybible",

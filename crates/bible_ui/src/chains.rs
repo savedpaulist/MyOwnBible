@@ -232,10 +232,11 @@ impl ChainsPanel {
     }
 
     fn create_chain(&mut self, title: String, window: &mut Window, cx: &mut Context<Self>) {
-        let title = title.trim().to_string();
-        if title.is_empty() {
-            return;
-        }
+        let title = if title.trim().is_empty() {
+            crate::i18n::tr_static("Новая цепочка").to_string()
+        } else {
+            title.trim().to_string()
+        };
         match shell::chains::create_chain(app_services(cx), &title) {
             Ok(summary) => {
                 self.new_chain_input.update(cx, |input, cx| {
@@ -670,26 +671,26 @@ impl ChainsPanel {
             .size_full()
             .min_h_0()
             .child(
-                h_flex()
+                v_flex()
                     .w_full()
                     .gap_1()
                     .p_2()
                     .border_b_1()
                     .border_color(border)
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.new_chain_input)),
-                    )
-                    .child(
                         Button::new("chain-create")
-                            .xsmall()
-                            .label(crate::i18n::tr_static("+ Создать"))
+                            .small()
+                            .label(crate::i18n::tr_static("+ Новая цепочка"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let title = this.new_chain_input.read(cx).value().to_string();
                                 this.create_chain(title, window, cx);
                             })),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .child(Input::new(&self.new_chain_input)),
                     ),
             )
             .child(

@@ -22,7 +22,16 @@ pub(crate) fn color(
         .get(category)
         .and_then(|hex| crate::annotations::parse_hex(hex))
         .unwrap_or_else(|| category_seed(category));
-    Some(ensure_contrast(seed, background, MIN_TEXT_CONTRAST))
+    // A fixed, high-chroma palette looks fluorescent on a charcoal/grey
+    // surface.  First fit the colour's chroma and perceived lightness to the
+    // actual surface, then use the WCAG pass only as a safety net.  Overrides
+    // deliberately follow the same rule: they remain recognisable but never
+    // become a visual hole in a calm theme.
+    Some(ensure_contrast(
+        harmonise_with_background(seed, background),
+        background,
+        MIN_TEXT_CONTRAST,
+    ))
 }
 
 /// Common visual grammar for the Greek and Hebrew code tables.
@@ -60,6 +69,33 @@ fn category_seed(category: &str) -> Hsla {
         "pronoun" => hsla(0.47, 0.67, 0.40, 1.0),
         _ => hsla(0.0, 0.0, 0.5, 1.0),
     }
+}
+
+/// Fits an accent to its canvas before contrast correction.
+///
+/// `s * (1 - |2l - 1|)` is HSL chroma.  It lets neutral grey backgrounds
+/// deliberately reduce categorical saturation, whereas a coloured theme can
+/// retain a little more of its own character.  The bounded lightness target
+/// keeps dark themes soft rather than neon while preserving enough headroom
+/// for the contrast solver below.
+fn harmonise_with_background(mut foreground: Hsla, background: Hsla) -> Hsla {
+    let bg_chroma = background.s * (1.0 - (2.0 * background.l - 1.0).abs());
+    let dark_surface = background.l < 0.5;
+    let saturation_cap = if dark_surface {
+        // 42–53% is deliberately quieter than the former 67–86% seeds.
+        0.42 + bg_chroma * 0.11
+    } else {
+        0.50 + bg_chroma * 0.12
+    };
+    foreground.s = foreground.s.min(saturation_cap);
+
+    // Move bright colours on dark themes toward a shared editorial ink value;
+    // on light themes move them toward a calm, darker ink value. The original
+    // lightness still contributes, so categories do not collapse together.
+    let anchor = if dark_surface { 0.66 } else { 0.37 };
+    foreground.l = foreground.l * 0.30 + anchor * 0.70;
+    foreground.a = 1.0;
+    foreground
 }
 
 fn ensure_contrast(mut foreground: Hsla, background: Hsla, target: f32) -> Hsla {
@@ -187,5 +223,22 @@ mod tests {
         let corrected = color("CONJ", &overrides, white).unwrap();
         assert!(contrast_ratio(corrected, white) >= MIN_TEXT_CONTRAST);
         assert!(corrected.l < 0.5);
+    }
+
+    #[test]
+    fn grey_dark_surfaces_tame_morphology_chroma_before_contrast_correction() {
+        let neutral_dark = hsla(0.0, 0.0, 0.13, 1.0);
+        let coloured_dark = hsla(0.58, 0.35, 0.13, 1.0);
+        let red = category_seed("verb");
+        let neutral = harmonise_with_background(red, neutral_dark);
+        let coloured = harmonise_with_background(red, coloured_dark);
+        assert!(neutral.s <= 0.43);
+        assert!(neutral.s < coloured.s);
+        assert!(
+            contrast_ratio(
+                ensure_contrast(neutral, neutral_dark, MIN_TEXT_CONTRAST),
+                neutral_dark
+            ) >= MIN_TEXT_CONTRAST
+        );
     }
 }

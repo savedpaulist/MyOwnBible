@@ -77,6 +77,39 @@ cargo test --workspace --all-targets
 - `mob-logo-master-1024.png` остаётся мастер-файлом для магазинов и будущих
   форматов упаковки.
 
+### Release для Windows
+
+Собирать Windows-версию лучше непосредственно на Windows. Откройте PowerShell,
+перейдите в корень проекта и выполните:
+
+```powershell
+rustup update stable
+cargo build --release
+```
+
+Готовое приложение появится здесь:
+
+```text
+target\release\bibleown.exe
+```
+
+Это уже графическая release-сборка для распространения:
+
+- при запуске рядом с приложением не открывается окно командной строки;
+- `resources/branding/windows/mob.ico` встроен непосредственно в `.exe`;
+- иконка используется Проводником, окном приложения и панелью задач.
+
+Для проверки запускайте именно `target\release\bibleown.exe`. Команда
+`cargo run` без `--release` запускает debug-версию и намеренно оставляет
+консоль для диагностических сообщений. Запуск release через Cargo выглядит
+так:
+
+```powershell
+cargo run --release
+```
+
+### Release для macOS
+
 Для создания macOS-пакета один раз установите упаковщик и запускайте команду
 на Mac:
 
@@ -84,6 +117,11 @@ cargo test --workspace --all-targets
 cargo install cargo-bundle
 cargo bundle --release
 ```
+
+Готовый пакет находится в `target/release/bundle/osx/BibleOWN.app`. Именно
+пакет `.app` получает `resources/branding/macos/mob.icns` и отображает иконку
+в Finder и Dock. Обычный `cargo build --release` также собирает исполняемый
+файл, но не создаёт полноценный macOS-пакет приложения.
 
 Для универсальной macOS-сборки Intel + Apple Silicon:
 

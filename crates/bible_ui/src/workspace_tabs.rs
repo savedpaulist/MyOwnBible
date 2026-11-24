@@ -6,7 +6,8 @@ use gpui_kit::base::{ResizeHandleContext, h_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{
     AnyDrag, BasePanelView, DockArea, DockAreaRenderer, DockContext, DockPlacement, DockSkin,
-    DragPanel, DropIndicator, NodeId, PanelHandle, PanelState, TabGroupContext, TabGroupRenderer,
+    DragPanel, DropIndicator, InsertTarget, NodeId, PaneRef, PanelHandle, PanelState,
+    TabGroupContext, TabGroupRenderer,
 };
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -117,6 +118,54 @@ fn panel_title(panel: &Arc<dyn BasePanelView>, window: &mut Window, cx: &mut App
     }
 }
 
+fn center_tab_group_count(area: &DockArea) -> usize {
+    area.layout(DockPlacement::Center)
+        .map(|tree| {
+            tree.node_ids()
+                .into_iter()
+                .filter(|node| {
+                    tree.find_node(*node)
+                        .is_some_and(|node| matches!(node.kind(), PaneRef::Tabs { .. }))
+                })
+                .count()
+        })
+        .unwrap_or_default()
+}
+
+/// Collapse the centre split into the selected tab group without removing
+/// any panels. Moving panels through the dock API preserves their entities,
+/// navigation history, editor state, and persisted tab order.
+fn merge_center_into(
+    area: &WeakEntity<DockArea>,
+    target: NodeId,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let _ = area.update(cx, |area, cx| {
+        let moving = area
+            .layout(DockPlacement::Center)
+            .map(|tree| {
+                tree.panels()
+                    .filter(|panel| tree.find_panel_node(*panel) != Some(target))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        for panel in moving {
+            area.move_panel(
+                panel,
+                InsertTarget::Tabs {
+                    node: target,
+                    ix: None,
+                    activate: false,
+                },
+                window,
+                cx,
+            );
+        }
+    });
+}
+
 struct TabDragPreview(Arc<dyn BasePanelView>);
 
 impl Render for TabDragPreview {
@@ -175,6 +224,13 @@ fn sized_tabs(
                 .selected(selected == Some(id))
                 .when(group.is_panel_closable(id, cx), |tab| {
                     let group = group.clone();
+                    tab.on_mouse_down(MouseButton::Middle, move |_, window, cx| {
+                        cx.stop_propagation();
+                        group.close(id, window, cx);
+                    })
+                })
+                .when(group.is_panel_closable(id, cx), |tab| {
+                    let group = group.clone();
                     tab.suffix(
                         Button::new(("workspace-sized-tab-close", index))
                             .ghost()
@@ -212,13 +268,16 @@ fn sized_tabs(
                     .on_drop({
                         let group = group.clone();
                         move |drag: &DragPanel, window, cx| {
-                            group.drop_panel(drag.clone(), Some(index), true, window, cx)
+                            cx.stop_propagation();
+                            group.drop_panel(drag.clone(), Some(index), true, window, cx);
                         }
                     })
+                    .drag_over::<AnyDrag>(|tab, _, _, cx| tab.bg(cx.theme().tokens.drop_target))
                     .on_drop({
                         let group = group.clone();
                         move |drag: &AnyDrag, window, cx| {
-                            group.drop_item(drag.clone(), None, window, cx)
+                            cx.stop_propagation();
+                            group.drop_item(drag.clone(), None, window, cx);
                         }
                     })
                 })
@@ -235,15 +294,18 @@ fn sized_tabs(
                 .on_drop({
                     let group = group.clone();
                     move |drag: &DragPanel, window, cx| {
+                        cx.stop_propagation();
                         let index = (drag.source() == group.node())
                             .then(|| group.panels().len().saturating_sub(1));
                         group.drop_panel(drag.clone(), index, false, window, cx);
                     }
                 })
+                .drag_over::<AnyDrag>(|target, _, _, cx| target.bg(cx.theme().tokens.drop_target))
                 .on_drop({
                     let group = group.clone();
                     move |drag: &AnyDrag, window, cx| {
-                        group.drop_item(drag.clone(), None, window, cx)
+                        cx.stop_propagation();
+                        group.drop_item(drag.clone(), None, window, cx);
                     }
                 })
         });
@@ -293,12 +355,42 @@ fn sized_tabs(
                         }),
                 )
         });
-    TabBar::new("workspace-sized-tabs")
+    let bar = TabBar::new("workspace-sized-tabs")
         .with_size(size)
         .track_scroll(&handle)
         .children(tabs)
         .last_empty_space(drop_target)
-        .when_some(suffix, |bar, suffix| bar.suffix(suffix))
+        .when_some(suffix, |bar, suffix| bar.suffix(suffix));
+
+    // The individual tabs provide exact insertion slots. The full strip is
+    // also a drop target so a transfer does not turn into a split merely
+    // because the pointer landed in padding, between tabs, or beside the last
+    // tab. This is especially important across two existing split groups.
+    div()
+        .id(("workspace-tab-strip-drop", group.node().as_u64()))
+        .w_full()
+        .min_w_0()
+        .h_full()
+        .when(group.is_droppable(), |strip| {
+            strip
+                .drag_over::<DragPanel>(|strip, _, _, cx| strip.bg(cx.theme().tokens.drop_target))
+                .on_drop({
+                    let group = group.clone();
+                    move |drag: &DragPanel, window, cx| {
+                        cx.stop_propagation();
+                        group.drop_panel(drag.clone(), None, true, window, cx);
+                    }
+                })
+                .drag_over::<AnyDrag>(|strip, _, _, cx| strip.bg(cx.theme().tokens.drop_target))
+                .on_drop({
+                    let group = group.clone();
+                    move |drag: &AnyDrag, window, cx| {
+                        cx.stop_propagation();
+                        group.drop_item(drag.clone(), None, window, cx);
+                    }
+                })
+        })
+        .child(bar)
         .into_any_element()
 }
 
@@ -329,12 +421,17 @@ impl TabGroupRenderer for WorkspaceTabBar {
         if !central {
             return self.base.render_tab_bar(group, window, cx);
         }
-        let size = app_services(cx).settings.read().tab_size;
-        let bar = match size {
-            TabSize::Compact => sized_tabs(group, ControlSize::Small, window, cx),
-            TabSize::Normal => self.base.render_tab_bar(group, window, cx),
-            TabSize::Large => sized_tabs(group, ControlSize::Large, window, cx),
+        let size = match app_services(cx).settings.read().tab_size {
+            TabSize::Compact => ControlSize::Small,
+            TabSize::Normal => ControlSize::Medium,
+            TabSize::Large => ControlSize::Large,
         };
+        let bar = sized_tabs(group, size, window, cx);
+
+        let has_split = self
+            .area
+            .upgrade()
+            .is_some_and(|area| center_tab_group_count(area.read(cx)) > 1);
 
         let workspace = self.workspace.clone();
         let origin = group
@@ -368,13 +465,29 @@ impl TabGroupRenderer for WorkspaceTabBar {
                 }
                 menu
             });
+        let close_split = has_split.then(|| {
+            let area = self.area.clone();
+            Button::new(("workspace-close-split", node.as_u64()))
+                .xsmall()
+                .ghost()
+                .icon(IconName::PanelLeftClose)
+                .tooltip(crate::i18n::tr(cx, "Закрыть разделение"))
+                .on_click(move |_, window, cx| merge_center_into(&area, node, window, cx))
+        });
         h_flex()
             .w_full()
             .min_w_0()
             .items_center()
             .bg(cx.theme().tokens.tab_bar)
             .child(div().flex_1().min_w_0().child(bar))
-            .child(div().flex_none().px_1().child(plus))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .px_1()
+                    .children(close_split)
+                    .child(plus),
+            )
             .into_any_element()
     }
     fn render_active_panel(
