@@ -632,6 +632,7 @@ impl SettingsPanel {
         let count = fonts.len();
         let ui_fonts = Self::font_options(fonts, &current.ui_font_family);
         let bible_fonts = Self::font_options(fonts, &current.reading_font_family);
+        let notes_fonts = Self::font_options(fonts, &current.notes_font_family);
         let panel_fonts = Self::font_options(fonts, &current.side_panel_font_family);
 
         let left_fonts = Self::font_options(fonts, &current.left_panel_font_family);
@@ -683,7 +684,7 @@ impl SettingsPanel {
                                 Self::apply_modules_dir,
                             )
                             .description(
-                                "Папка с базами модулей MyBible (*.sqlite3). Выберите её через проводник или вставьте путь вручную.",
+                                crate::i18n::tr(cx, "Папка с базами модулей MyBible (*.sqlite3). Выберите её через проводник или вставьте путь вручную."),
                             ),
                             Self::path_item(
                                 &panel,
@@ -693,9 +694,51 @@ impl SettingsPanel {
                                 Self::apply_notes_dir,
                             )
                             .description(
-                                "Папка Markdown-хранилища (например, Obsidian). Пустое значение отключает заметки.",
+                                crate::i18n::tr(cx, "Папка Markdown-хранилища (например, Obsidian). Пустое значение отключает заметки."),
                             ),
                         ]),
+                    SettingGroup::new()
+                        .title(crate::i18n::tr(cx, "Поисковый индекс"))
+                        .items([SettingItem::render(|_options, _window, cx| {
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_between()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(crate::i18n::tr(
+                                            cx,
+                                            "Полностью пересоздаёт индексы переводов, словарей и комментариев.",
+                                        )),
+                                )
+                                .child(
+                                    Button::new("force-reindex-modules")
+                                        .small()
+                                        .label(crate::i18n::tr(cx, "Реиндексировать модули"))
+                                        .on_click(|_, _, cx| {
+                                            shell::search::force_reindex_all(app_services(cx));
+                                            cx.refresh_windows();
+                                        }),
+                                )
+                        })]),
+                    SettingGroup::new()
+                        .title(crate::i18n::tr(cx, "Подсказки"))
+                        .items([SettingItem::new(
+                            crate::i18n::tr(cx, "Показывать подсказки функций"),
+                            SettingField::checkbox(
+                                |cx: &App| app_services(cx).settings.read().show_feature_hints,
+                                |value, cx| {
+                                    if Self::persist_settings(cx, move |s| s.show_feature_hints = value) {
+                                        navigation::notify_settings_changed(cx);
+                                    }
+                                },
+                            ),
+                        )
+                        .description(crate::i18n::tr(cx, "Скрывает знаки вопроса и развёрнутые подсказки интерфейса."))]),
                     SettingGroup::new().title(crate::i18n::tr(cx, "Файл настроек")).items([
                         SettingItem::render(|_options, _window, _cx| {
                             let status = last_save_status()
@@ -756,7 +799,7 @@ impl SettingsPanel {
                     SettingGroup::new().title(crate::i18n::tr(cx, "Оформление окна")).items([
                         SettingItem::new(
                             crate::i18n::tr(cx, "Цветовая тема"),
-                            SettingField::dropdown(
+                            SettingField::scrollable_dropdown(
                                 crate::theme::available(cx)
                                     .into_iter()
                                     .map(|name| {
@@ -770,10 +813,17 @@ impl SettingsPanel {
                                 },
                             ),
                         )
-                        .description(format!(
-                            "Меняет фон, поверхности, контраст и акцентные цвета. Zed JSON темы автоматически подхватываются из папки {} и из пользовательской папки Zed; для новых файлов перезапустите приложение.",
-                                    shell::themes::storage_dir().display()
-                        )),
+                        .description(if crate::i18n::is_english(cx) {
+                            format!(
+                                "Changes backgrounds, surfaces, contrast, and accent colors. Zed JSON themes are loaded from {} and the user Zed theme folder; restart the app after adding files.",
+                                shell::themes::storage_dir().display()
+                            )
+                        } else {
+                            format!(
+                                "Меняет фон, поверхности, контраст и акцентные цвета. Zed JSON темы автоматически подхватываются из папки {} и из пользовательской папки Zed; для новых файлов перезапустите приложение.",
+                                shell::themes::storage_dir().display()
+                            )
+                        }),
                         SettingItem::new(
                             crate::i18n::tr(cx, "Масштаб интерфейса"),
                             SettingField::dropdown(
@@ -845,10 +895,10 @@ impl SettingsPanel {
                             SettingField::dropdown(
                                 vec![
                                     ("0".into(), crate::i18n::tr_static("Автоматически").into()),
-                                    ("720".into(), "720 px — компактно".into()),
-                                    ("880".into(), "880 px — стандарт".into()),
-                                    ("1040".into(), "1040 px — широко".into()),
-                                    ("1200".into(), "1200 px — очень широко".into()),
+                                    ("720".into(), if crate::i18n::is_english(cx) { "720 px — compact" } else { "720 px — компактно" }.into()),
+                                    ("880".into(), if crate::i18n::is_english(cx) { "880 px — standard" } else { "880 px — стандарт" }.into()),
+                                    ("1040".into(), if crate::i18n::is_english(cx) { "1040 px — wide" } else { "1040 px — широко" }.into()),
+                                    ("1200".into(), if crate::i18n::is_english(cx) { "1200 px — very wide" } else { "1200 px — очень широко" }.into()),
                                 ],
                                 |cx: &App| format!("{}", app_services(cx).settings.read().reading_column_width as u32).into(),
                                 |value, cx| {
@@ -900,7 +950,11 @@ impl SettingsPanel {
                                         div()
                                             .text_sm()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child(format!("Доступно семейств шрифтов: {count}")),
+                                            .child(if crate::i18n::is_english(cx) {
+                                                format!("Available font families: {count}")
+                                            } else {
+                                                format!("Доступно семейств шрифтов: {count}")
+                                            }),
                                     )
                                     .child(
                                         Button::new("refresh-system-fonts")
@@ -993,6 +1047,9 @@ impl SettingsPanel {
                     Self::font_profile(crate::i18n::tr(cx, "Словари"), cx, dictionary_fonts,
                         |s| &s.dictionary_font_family, |s, family| s.dictionary_font_family = family,
                         |s| s.dictionary_font_size, |s, size| s.dictionary_font_size = size),
+                    Self::font_profile(crate::i18n::tr(cx, "Заметки"), cx, notes_fonts,
+                        |s| &s.notes_font_family, |s, family| s.notes_font_family = family,
+                        |s| s.notes_font_size, |s, size| s.notes_font_size = size),
                     SettingGroup::new().title(crate::i18n::tr(cx, "Правая панель")).items([
                         SettingItem::new(
                             crate::i18n::tr(cx, "Семейство шрифта"),
@@ -1096,6 +1153,66 @@ impl SettingsPanel {
                             ),
                         )
                         .description(crate::i18n::tr(cx, "Показывать номера стихов в отдельной колонке.")),
+                    ]),
+                ]),
+                SettingPage::new(crate::i18n::tr(cx, "Копирование")).groups([
+                    SettingGroup::new().title(crate::i18n::tr(cx, "Ссылки на источник")).items([
+                        SettingItem::new(
+                            crate::i18n::tr(cx, "Библия: вставлять ссылку"),
+                            SettingField::checkbox(
+                                |cx: &App| app_services(cx).settings.read().copy_bible_include_reference,
+                                |value, cx| {
+                                    if Self::persist_settings(cx, move |s| s.copy_bible_include_reference = value) {
+                                        navigation::notify_settings_changed(cx);
+                                    }
+                                },
+                            ),
+                        ),
+                        SettingItem::new(
+                            crate::i18n::tr(cx, "Словари: вставлять ссылку на модуль"),
+                            SettingField::checkbox(
+                                |cx: &App| app_services(cx).settings.read().copy_dictionary_include_reference,
+                                |value, cx| {
+                                    if Self::persist_settings(cx, move |s| s.copy_dictionary_include_reference = value) {
+                                        navigation::notify_settings_changed(cx);
+                                    }
+                                },
+                            ),
+                        ),
+                        SettingItem::new(
+                            crate::i18n::tr(cx, "Комментарии: вставлять ссылку на модуль"),
+                            SettingField::checkbox(
+                                |cx: &App| app_services(cx).settings.read().copy_commentary_include_reference,
+                                |value, cx| {
+                                    if Self::persist_settings(cx, move |s| s.copy_commentary_include_reference = value) {
+                                        navigation::notify_settings_changed(cx);
+                                    }
+                                },
+                            ),
+                        ),
+                        SettingItem::new(
+                            crate::i18n::tr(cx, "Положение ссылки"),
+                            SettingField::dropdown(
+                                vec![
+                                    ("start".into(), crate::i18n::tr_static("В начале").into()),
+                                    ("end".into(), crate::i18n::tr_static("В конце").into()),
+                                ],
+                                |cx: &App| match app_services(cx).settings.read().copy_reference_position {
+                                    shell::settings::CopyReferencePosition::Start => "start".into(),
+                                    shell::settings::CopyReferencePosition::End => "end".into(),
+                                },
+                                |value, cx| {
+                                    let position = if value.as_ref() == "start" {
+                                        shell::settings::CopyReferencePosition::Start
+                                    } else {
+                                        shell::settings::CopyReferencePosition::End
+                                    };
+                                    if Self::persist_settings(cx, move |s| s.copy_reference_position = position) {
+                                        navigation::notify_settings_changed(cx);
+                                    }
+                                },
+                            ),
+                        ),
                     ]),
                 ]),
                 crate::sync::page(),

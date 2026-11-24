@@ -68,6 +68,16 @@ pub struct BookEntry {
     pub long_name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CommentaryEntry {
+    pub book: BookNumber,
+    pub chapter_from: u16,
+    pub verse_from: u16,
+    pub chapter_to: u16,
+    pub verse_to: u16,
+    pub text: String,
+}
+
 pub struct ModuleRegistry {
     modules_dir: PathBuf,
     modules: HashMap<ModuleId, Arc<ModuleMeta>>,
@@ -520,6 +530,41 @@ impl ModuleRegistry {
         })
         .unwrap_or_else(|error| {
             log::warn!("commentary failed for {module_id}: {error:#}");
+            Vec::new()
+        })
+    }
+
+    /// Complete commentary catalogue for the sidebar browser. The query stays
+    /// in infrastructure so presentation never knows the SQLite schema.
+    pub fn commentary_entries(&mut self, module_id: &ModuleId) -> Vec<CommentaryEntry> {
+        let Some(db) = self.db_for(module_id) else {
+            return Vec::new();
+        };
+        db.with(|conn| {
+            let rows = conn.select::<(i64, i64, i64, Option<i64>, Option<i64>, String)>(
+                "SELECT book_number, chapter_number_from, verse_number_from, \
+                        chapter_number_to, verse_number_to, text \
+                 FROM commentaries \
+                 ORDER BY book_number, chapter_number_from, verse_number_from",
+            )?()?;
+            Ok(rows
+                .into_iter()
+                .map(
+                    |(book, chapter_from, verse_from, chapter_to, verse_to, text)| {
+                        CommentaryEntry {
+                            book: BookNumber(book),
+                            chapter_from: chapter_from as u16,
+                            verse_from: verse_from as u16,
+                            chapter_to: chapter_to.unwrap_or(chapter_from) as u16,
+                            verse_to: verse_to.unwrap_or(verse_from) as u16,
+                            text,
+                        }
+                    },
+                )
+                .collect())
+        })
+        .unwrap_or_else(|error| {
+            log::warn!("commentary catalogue failed for {module_id}: {error:#}");
             Vec::new()
         })
     }

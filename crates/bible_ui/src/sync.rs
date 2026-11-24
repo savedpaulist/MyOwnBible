@@ -92,8 +92,15 @@ fn render_connection(cx: &App) -> AnyElement {
         .when_some(status.last_success.filter(|_| status.connected), |this, time| {
             let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |now| now.as_secs().saturating_sub(time));
             let label = match elapsed {
+                0..=59 if crate::i18n::is_english(cx) => "Last synced just now".to_owned(),
                 0..=59 => "Последняя синхронизация только что".to_owned(),
+                60..=3599 if crate::i18n::is_english(cx) => {
+                    format!("Minutes since last sync: {}", elapsed / 60)
+                }
                 60..=3599 => format!("Минут с последней синхронизации: {}", elapsed / 60),
+                _ if crate::i18n::is_english(cx) => {
+                    format!("Hours since last sync: {}", elapsed / 3600)
+                }
                 _ => format!("Часов с последней синхронизации: {}", elapsed / 3600),
             };
             this.child(div().text_color(theme.muted_foreground).child(label))
@@ -121,7 +128,11 @@ fn render_connection(cx: &App) -> AnyElement {
         ))
         .when(!status.conflicts.is_empty(), |this| this.child(
             Button::new("sync-conflicts").small()
-                .label(format!("Конфликты ({})", status.conflicts.len()))
+                .label(if crate::i18n::is_english(cx) {
+                    format!("Conflicts ({})", status.conflicts.len())
+                } else {
+                    format!("Конфликты ({})", status.conflicts.len())
+                })
                 .disabled(running).on_click(|_, window, cx| open_conflicts(window, cx)),
         )).into_any_element()
 }
@@ -138,9 +149,21 @@ fn path_button(id: &'static str, label: &'static str, action: PathAction, cx: &A
         .on_click(move |_, _, cx| {
             let config = matches!(action, PathAction::Configure);
             let prompt = match action {
-                PathAction::Configure => "Выберите JSON-файл OAuth-клиента Google",
-                PathAction::Export => "Выберите папку, в которой создать экспорт",
-                PathAction::Import => "Выберите экспортированную папку BibleOWN",
+                PathAction::Configure => if crate::i18n::is_english(cx) {
+                    "Choose the Google OAuth client JSON file"
+                } else {
+                    "Выберите JSON-файл OAuth-клиента Google"
+                },
+                PathAction::Export => if crate::i18n::is_english(cx) {
+                    "Choose a folder for the export"
+                } else {
+                    "Выберите папку, в которой создать экспорт"
+                },
+                PathAction::Import => if crate::i18n::is_english(cx) {
+                    "Choose an exported BibleOWN folder"
+                } else {
+                    "Выберите экспортированную папку BibleOWN"
+                },
             };
             let picker = cx.prompt_for_paths(PathPromptOptions {
                 files: config, directories: !config, multiple: false, prompt: Some(prompt.into()),
@@ -276,13 +299,13 @@ fn open_conflicts(window: &mut Window, cx: &mut App) {
 
 fn render_conflict(conflict: Conflict) -> impl IntoElement {
     let title = match conflict.key.kind {
-        Kind::Annotation => "Оформление стиха или слова",
-        Kind::VerseComment => "Комментарий к стиху",
-        Kind::Chain => "Цепочка",
-        Kind::Tag => "Тег",
-        Kind::Question => "Вопрос",
-        Kind::CrossReference => "Параллельное место",
-        Kind::Note => "Заметка",
+        Kind::Annotation => crate::i18n::tr_static("Оформление стиха или слова"),
+        Kind::VerseComment => crate::i18n::tr_static("Комментарий к стиху"),
+        Kind::Chain => crate::i18n::tr_static("Цепочка"),
+        Kind::Tag => crate::i18n::tr_static("Тег"),
+        Kind::Question => crate::i18n::tr_static("Вопрос"),
+        Kind::CrossReference => crate::i18n::tr_static("Параллельное место"),
+        Kind::Note => crate::i18n::tr_static("Заметка"),
     };
     let note = conflict.key.kind == Kind::Note;
     v_flex()
@@ -294,7 +317,7 @@ fn render_conflict(conflict: Conflict) -> impl IntoElement {
             let key = conflict.key.clone();
             let id = variant.id;
             let preview = match variant.value {
-                None => "Удаление записи".to_owned(),
+                None => crate::i18n::tr_static("Удаление записи").to_owned(),
                 Some(value) if note => value.as_str().unwrap_or_default().to_owned(),
                 Some(value) => serde_json::to_string_pretty(&value).unwrap_or_default(),
             };
@@ -308,7 +331,7 @@ fn render_conflict(conflict: Conflict) -> impl IntoElement {
                         .id(SharedString::from(format!("sync-preview-{id}")))
                         .text_sm()
                         .max_h(px(180.))
-                        .overflow_y_scroll()
+                        .overflow_y_scrollbar()
                         .child(preview),
                 )
                 .child(

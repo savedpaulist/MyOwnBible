@@ -251,10 +251,7 @@ impl WorkspaceView {
             |this, _, event: &crate::navigation::OpenCommentary, window, cx| {
                 let module = event.module.clone();
                 let reference = event.reference;
-                let key = ArticleTab::commentary_key(&module, reference);
-                this.open_article_tab(key, window, cx, move |_, cx| {
-                    ArticleTab::new_commentary_at(cx, module, reference)
-                });
+                this.open_commentary_tab(module, reference, window, cx);
             },
         )
         .detach();
@@ -354,7 +351,11 @@ impl WorkspaceView {
         let mut names: Vec<&str> = building.iter().map(String::as_str).collect();
         names.sort_unstable();
         let shown = names.len().min(2);
-        let mut label = format!("Индексируется {}", names[..shown].join(", "));
+        let mut label = if crate::i18n::is_english(cx) {
+            format!("Indexing {}", names[..shown].join(", "))
+        } else {
+            format!("Индексируется {}", names[..shown].join(", "))
+        };
         if names.len() > shown {
             label.push_str(&format!(" +{}", names.len() - shown));
         }
@@ -696,14 +697,17 @@ impl WorkspaceView {
             }
             ModuleKind::Commentary => {
                 let location = services.current_location.lock().clone();
-                let (book, chapter) = location
-                    .map(|location| (location.book, location.chapter))
-                    .unwrap_or((bible_domain::ids::BookNumber(0), 0));
-                let key = format!("comm:{}:{}:{}", request.module, book.0, chapter);
-                let module = request.module.clone();
-                self.open_article_tab(key, window, cx, move |window, cx| {
-                    ArticleTab::new_commentary(window, cx, module, book, chapter)
-                });
+                let reference = location.map_or_else(
+                    || bible_domain::ids::VerseRef::single(bible_domain::ids::BookNumber(0), 0, 0),
+                    |location| {
+                        bible_domain::ids::VerseRef::single(
+                            location.book,
+                            location.chapter,
+                            location.verse,
+                        )
+                    },
+                );
+                self.open_commentary_tab(request.module.clone(), reference, window, cx);
             }
             // Параллельные ссылки и прочие виды: их покрывает секция
             // «Параллельные» панели «Verse» — отдельной вкладки не делаем.
@@ -731,6 +735,37 @@ impl WorkspaceView {
             return;
         }
         let tab = cx.new(|cx| build(window, cx));
+        let id = PanelId::from(tab.entity_id());
+        self.open_articles.insert(key, tab.downgrade());
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(tab), DockPlacement::Center, None, window, cx);
+            area.select_panel(id, window, cx);
+        });
+    }
+
+    /// One commentary module owns one centre tab. Sidebar references act as
+    /// its table of contents and move the already open document instead of
+    /// creating a separate tab for every verse or chapter.
+    fn open_commentary_tab(
+        &mut self,
+        module: bible_domain::ids::ModuleId,
+        reference: bible_domain::ids::VerseRef,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = ArticleTab::commentary_key(&module);
+        self.open_articles
+            .retain(|_, weak| weak.upgrade().is_some());
+        if let Some(tab) = self.open_articles.get(&key).and_then(|weak| weak.upgrade()) {
+            tab.update(cx, |tab, cx| tab.scroll_commentary_to(reference, cx));
+            let id = PanelId::from(tab.entity_id());
+            self.dock_area.update(cx, |area, cx| {
+                area.select_panel(id, window, cx);
+            });
+            return;
+        }
+
+        let tab = cx.new(|cx| ArticleTab::new_commentary_at(cx, module, reference));
         let id = PanelId::from(tab.entity_id());
         self.open_articles.insert(key, tab.downgrade());
         self.dock_area.update(cx, |area, cx| {

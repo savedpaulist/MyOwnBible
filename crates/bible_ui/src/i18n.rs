@@ -51,6 +51,16 @@ fn english(russian: &str) -> &str {
         "Английский" => "English",
         "Язык" => "Language",
         "Папки приложения" => "Application folders",
+        "Поисковый индекс" => "Search index",
+        "Реиндексировать модули" => "Reindex modules",
+        "Полностью пересоздаёт индексы переводов, словарей и комментариев." => {
+            "Fully rebuilds translation, dictionary, and commentary indexes."
+        }
+        "Подсказки" => "Help hints",
+        "Показывать подсказки функций" => "Show feature hints",
+        "Скрывает знаки вопроса и развёрнутые подсказки интерфейса." => {
+            "Hides question marks and detailed interface hints."
+        }
         "Файл настроек" => "Settings file",
         "По умолчанию" => "Defaults",
         "Авто — первый доступный перевод" => {
@@ -77,6 +87,18 @@ fn english(russian: &str) -> &str {
         "Интерфейс приложения" => "Application interface",
         "Текст Библии" => "Bible text",
         "Чтение" => "Reading",
+        "Копирование" => "Copying",
+        "Ссылки на источник" => "Source references",
+        "Библия: вставлять ссылку" => "Bible: include reference",
+        "Словари: вставлять ссылку на модуль" => {
+            "Dictionaries: include module reference"
+        }
+        "Комментарии: вставлять ссылку на модуль" => {
+            "Commentaries: include module reference"
+        }
+        "Положение ссылки" => "Reference position",
+        "В начале" => "At the beginning",
+        "В конце" => "At the end",
         "Просмотр" => "Preview",
         "Правка" => "Edit",
         "сохранено" => "saved",
@@ -161,6 +183,12 @@ fn english(russian: &str) -> &str {
         }
         "Конфликты синхронизации" => "Sync conflicts",
         "Выбрать эту версию" => "Choose this version",
+        "Оформление стиха или слова" => "Verse or word styling",
+        "Цепочка" => "Chain",
+        "Тег" => "Tag",
+        "Вопрос" => "Question",
+        "Параллельное место" => "Cross-reference",
+        "Удаление записи" => "Deleted record",
         "← Книги" => "← Books",
         "← Назад" => "← Back",
         "+ До" => "+ Before",
@@ -279,6 +307,12 @@ fn english(russian: &str) -> &str {
         "Не выбрано — заметки отключены" => {
             "Not selected — notes are disabled"
         }
+        "Папка с базами модулей MyBible (*.sqlite3). Выберите её через проводник или вставьте путь вручную." => {
+            "Folder containing MyBible module databases (*.sqlite3). Choose it or paste the path manually."
+        }
+        "Папка Markdown-хранилища (например, Obsidian). Пустое значение отключает заметки." => {
+            "Markdown vault folder (for example, Obsidian). An empty value disables notes."
+        }
         "Изменение языка применяется сразу во всех окнах приложения." => {
             "The language change is applied immediately in every application window."
         }
@@ -373,8 +407,19 @@ fn english(russian: &str) -> &str {
         "Другие переводы" => "Other translations",
         "Параллельные ссылки" => "Cross-references",
         "Комментарии" => "Commentaries",
+        "Модули комментариев не найдены." => {
+            "No commentary modules found."
+        }
         "Заметки" => "Notes",
         "Теги" => "Tags",
+        "Добавить тег" => "Add tag",
+        "Имя нового тега…" => "New tag name…",
+        "Новый тег" => "New tag",
+        "Создать новый тег" => "Create new tag",
+        "Создать новую заметку" => "Create new note",
+        "Создать новую цепочку" => "Create new chain",
+        "Новая цепочка" => "New chain",
+        "Комментариев пока нет." => "There are no comments yet.",
         "Цепочки" => "Chains",
         "Вопросы" => "Questions",
         "Кликните по слову в тексте чтения" => {
@@ -402,6 +447,24 @@ fn english(russian: &str) -> &str {
         "Показать или скрыть содержимое" => "Show or hide content",
         "Новая вкладка" => "New tab",
         "Библия" => "Bible",
+        "Точное" => "Exact",
+        "Частичное" => "Partial",
+        "Похожее" => "Similar",
+        "Учитывать диакритику/огласовки" => {
+            "Respect diacritics/vowel marks"
+        }
+        "Источники и книги поиска" => "Search sources and books",
+        "Выбранные книги Библии" => "Selected Bible books",
+        "Все" => "All",
+        "Тора" => "Torah",
+        "Исторические книги" => "Historical books",
+        "Поэтические книги" => "Poetic books",
+        "Большие пророки" => "Major prophets",
+        "Малые пророки" => "Minor prophets",
+        "Евангелия и Деяния" => "Gospels and Acts",
+        "Послания Павла" => "Pauline epistles",
+        "Соборные послания" => "General epistles",
+        "Откровение" => "Revelation",
         "Словарь" => "Dictionary",
         "Заметка" => "Note",
         "Закрыть вкладку" => "Close tab",

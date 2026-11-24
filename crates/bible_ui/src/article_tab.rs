@@ -11,11 +11,13 @@
 //! восстановление — `new_restored` через PanelRegistry, контент
 //! перечитывается из модуля обычным путём.
 
-use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::base::{TextView, h_flex, v_flex};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent, PanelInfo, PanelState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use std::sync::{Arc, OnceLock};
 
 use bible_domain::ids::{BookNumber, ModuleId, VerseRef};
 use bible_domain::ports::ModuleCatalog as _;
@@ -71,6 +73,17 @@ pub struct ArticleTabPayload {
     pub verse_range: Option<(u16, u16)>,
 }
 
+struct CommentaryArticleRow {
+    book: BookNumber,
+    chapter_from: u16,
+    verse_from: u16,
+    chapter_to: u16,
+    verse_to: u16,
+    label: String,
+    raw: String,
+    html: OnceLock<String>,
+}
+
 pub struct ArticleTab {
     focus_handle: FocusHandle,
     kind: ArticleKind,
@@ -85,6 +98,8 @@ pub struct ArticleTab {
     heading: String,
     /// Нормализованный HTML для TextView.
     html: String,
+    commentary_rows: Arc<Vec<CommentaryArticleRow>>,
+    commentary_list: ListState,
     error: Option<String>,
     _settings_subscription: Subscription,
 }
@@ -103,26 +118,6 @@ impl ArticleTab {
         this.topic = Some(topic);
         this.reload(cx);
         this
-    }
-
-    /// Вкладка комментария модуля к главе.
-    pub fn new_commentary(
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-        module: ModuleId,
-        book: BookNumber,
-        chapter: u16,
-    ) -> Self {
-        Self::new_commentary_at(
-            cx,
-            module,
-            VerseRef {
-                book,
-                chapter,
-                verse: 0,
-                end_verse: None,
-            },
-        )
     }
 
     pub fn new_commentary_at(
@@ -174,6 +169,8 @@ impl ArticleTab {
             title: String::new(),
             heading: String::new(),
             html: String::new(),
+            commentary_rows: Arc::new(Vec::new()),
+            commentary_list: ListState::new(0, ListAlignment::Top, px(120.)),
             error: None,
             _settings_subscription: settings_subscription,
         }
@@ -188,58 +185,59 @@ impl ArticleTab {
                 self.module,
                 self.topic.as_deref().unwrap_or("")
             ),
-            ArticleKind::Commentary => Self::commentary_key(
-                &self.module,
-                VerseRef {
-                    book: self.book,
-                    chapter: self.chapter,
-                    verse: self.verse_range.map_or(0, |range| range.0),
-                    end_verse: self.verse_range.map(|range| range.1),
-                },
-            ),
+            ArticleKind::Commentary => Self::commentary_key(&self.module),
         }
     }
 
-    pub fn commentary_key(module: &ModuleId, reference: VerseRef) -> String {
-        let key = format!("comm:{module}:{}:{}", reference.book.0, reference.chapter);
-        if reference.verse == 0 {
-            key
-        } else {
-            format!(
-                "{key}:{}:{}",
-                reference.verse,
-                reference.end_verse.unwrap_or(reference.verse)
-            )
-        }
+    pub fn commentary_key(module: &ModuleId) -> String {
+        format!("comm:{module}")
     }
 
-    /// Имена книги (длинное/короткое): сначала из таблицы книг самого
-    /// модуля; если там её нет (у части комментариев книги не описаны) —
-    /// из модуля текущего чтения, затем из перевода по умолчанию;
-    /// в конце — «Кн. N».
-    fn book_names(&self, cx: &App) -> (String, String) {
-        let services = app_services(cx);
-        let mut sources: Vec<ModuleId> = vec![self.module.clone()];
-        if let Some(location) = services.current_location.lock().as_ref() {
-            sources.push(location.module.clone());
-        }
-        if let Some(default) = services.default_translation() {
-            sources.push(default);
-        }
-        let mut registry = services.registry.lock();
-        for module in sources {
-            if let Some(entry) = registry
-                .books_of(&module)
-                .into_iter()
-                .find(|entry| entry.book_number == self.book.0)
+    fn commentary_row_index(&self, reference: VerseRef) -> Option<usize> {
+        let contains = |row: &CommentaryArticleRow| {
+            if row.book != reference.book
+                || reference.chapter < row.chapter_from
+                || reference.chapter > row.chapter_to
             {
-                return (entry.long_name, entry.short_name);
+                return false;
             }
+            if reference.verse == 0 {
+                return true;
+            }
+            let after_start =
+                reference.chapter > row.chapter_from || reference.verse >= row.verse_from;
+            let before_end = reference.chapter < row.chapter_to || reference.verse <= row.verse_to;
+            after_start && before_end
+        };
+        self.commentary_rows.iter().position(contains).or_else(|| {
+            self.commentary_rows.iter().position(|row| {
+                row.book.0 > reference.book.0
+                    || (row.book == reference.book
+                        && (row.chapter_from > reference.chapter
+                            || (row.chapter_from == reference.chapter
+                                && row.verse_from >= reference.verse)))
+            })
+        })
+    }
+
+    fn scroll_commentary_list(&self, reference: VerseRef) {
+        if let Some(item_ix) = self.commentary_row_index(reference) {
+            self.commentary_list.scroll_to(ListOffset {
+                item_ix,
+                offset_in_item: px(0.),
+            });
         }
-        (
-            format!("Кн. {}", self.book.0),
-            format!("Кн.{}", self.book.0),
-        )
+    }
+
+    pub fn scroll_commentary_to(&mut self, reference: VerseRef, cx: &mut Context<Self>) {
+        self.book = reference.book;
+        self.chapter = reference.chapter;
+        self.verse_range = (reference.verse > 0).then_some((
+            reference.verse,
+            reference.end_verse.unwrap_or(reference.verse),
+        ));
+        self.scroll_commentary_list(reference);
+        cx.notify();
     }
 
     /// Перечитать содержимое из модуля (открытие и восстановление —
@@ -276,25 +274,61 @@ impl ArticleTab {
                 }
             }
             ArticleKind::Commentary => {
-                let (long_name, short_name) = self.book_names(cx);
-                self.title = format!("{short_name} {}", self.chapter);
-                let location = shell::services::CurrentLocation {
-                    module: self.module.clone(),
-                    book: self.book,
-                    book_title: long_name,
-                    book_short: short_name,
-                    chapter: self.chapter,
-                    verse: 1,
+                let (entries, book_labels) = {
+                    let mut registry = services.registry.lock();
+                    let entries = registry.commentary_entries(&self.module);
+                    let labels = registry
+                        .book_entries()
+                        .iter()
+                        .map(|entry| (entry.book_number, entry.short_name.clone()))
+                        .collect::<std::collections::HashMap<_, _>>();
+                    (entries, labels)
                 };
-                let view = shell::article::open_commentary_range(
-                    services,
-                    &self.module,
-                    &label,
-                    &location,
-                    self.verse_range,
-                );
-                self.heading = view.title;
-                self.html = article::blocks_to_html(&view.blocks);
+                let rows = entries
+                    .into_iter()
+                    .map(|entry| {
+                        let book = book_labels
+                            .get(&entry.book.0)
+                            .cloned()
+                            .unwrap_or_else(|| format!("Кн.{}", entry.book.0));
+                        let row_label = if entry.chapter_to != entry.chapter_from {
+                            format!(
+                                "{book} {}:{}–{}:{}",
+                                entry.chapter_from,
+                                entry.verse_from,
+                                entry.chapter_to,
+                                entry.verse_to
+                            )
+                        } else if entry.verse_to != entry.verse_from {
+                            format!(
+                                "{book} {}:{}–{}",
+                                entry.chapter_from, entry.verse_from, entry.verse_to
+                            )
+                        } else {
+                            format!("{book} {}:{}", entry.chapter_from, entry.verse_from)
+                        };
+                        CommentaryArticleRow {
+                            book: entry.book,
+                            chapter_from: entry.chapter_from,
+                            verse_from: entry.verse_from,
+                            chapter_to: entry.chapter_to,
+                            verse_to: entry.verse_to,
+                            label: row_label,
+                            raw: entry.text,
+                            html: OnceLock::new(),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                self.commentary_list.reset(rows.len());
+                self.commentary_rows = Arc::new(rows);
+                self.title = label.clone();
+                self.heading = label;
+                self.scroll_commentary_list(VerseRef {
+                    book: self.book,
+                    chapter: self.chapter,
+                    verse: self.verse_range.map_or(0, |range| range.0),
+                    end_verse: self.verse_range.map(|range| range.1),
+                });
                 self.error = None;
             }
         }
@@ -368,6 +402,65 @@ impl Render for ArticleTab {
                         .child(error.clone()),
                 );
         }
+        let content = match self.kind {
+            ArticleKind::Dict => article::article_text_view(
+                ElementId::Name(format!("article-tab-{}", self.dedup_key()).into()),
+                self.html.clone(),
+                cx,
+            )
+            .text_size(font_size)
+            .into_any_element(),
+            ArticleKind::Commentary => {
+                let rows = self.commentary_rows.clone();
+                let module = self.module.clone();
+                let document = list(self.commentary_list.clone(), move |index, _, cx| {
+                    let Some(row) = rows.get(index) else {
+                        return div().into_any_element();
+                    };
+                    let html = row
+                        .html
+                        .get_or_init(|| {
+                            article::blocks_to_html(&shell::article::parse_module_html(
+                                &row.raw, &module,
+                            ))
+                        })
+                        .clone();
+                    v_flex()
+                        .id(("commentary-document-row", index))
+                        .w_full()
+                        .min_w_0()
+                        .border_b_1()
+                        .border_color(cx.theme().border.opacity(0.45))
+                        .child(
+                            div()
+                                .px_3()
+                                .pt_3()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(cx.theme().accent)
+                                .child(row.label.clone()),
+                        )
+                        .child(
+                            article::linked_text_view(
+                                TextView::html(("commentary-document-text", index), html),
+                                cx,
+                            )
+                            .w_full()
+                            .p_3()
+                            .text_size(font_size),
+                        )
+                        .into_any_element()
+                })
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .size_full();
+                div()
+                    .relative()
+                    .size_full()
+                    .child(document)
+                    .vertical_scrollbar(&self.commentary_list)
+                    .into_any_element()
+            }
+        };
+
         v_flex()
             .size_full()
             .min_h_0()
@@ -393,16 +486,7 @@ impl Render for ArticleTab {
                             .child(self.heading.clone()),
                     ),
             )
-            .child(
-                div().flex_1().min_h_0().w_full().child(
-                    article::article_text_view(
-                        ElementId::Name(format!("article-tab-{}", self.dedup_key()).into()),
-                        self.html.clone(),
-                        cx,
-                    )
-                    .text_size(font_size),
-                ),
-            )
+            .child(div().flex_1().min_h_0().w_full().child(content))
             .when(!panel_font_family.is_empty(), |root| {
                 root.font_family(panel_font_family)
             })

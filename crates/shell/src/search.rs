@@ -124,7 +124,11 @@ pub fn search_sources(
         .iter()
         .chain(&dictionaries)
         .chain(&commentaries);
-    queue_indexes(services, selected.clone().map(|meta| (**meta).clone()));
+    queue_indexes(
+        services,
+        selected.clone().map(|meta| (**meta).clone()),
+        false,
+    );
     let building = {
         let pending = services.index_building.lock();
         selected
@@ -281,10 +285,19 @@ fn group_hits_by_module<T: Clone>(
 
 /// Warm the catalogue after opening the window and after explicit rescans.
 pub fn warm_indexes(services: &AppServices) {
-    queue_indexes(services, services.registry.modules());
+    queue_indexes(services, services.registry.modules(), false);
 }
 
-fn queue_indexes(services: &AppServices, modules: impl IntoIterator<Item = ModuleMeta>) {
+/// Rebuild every searchable module on an explicit user request.
+pub fn force_reindex_all(services: &AppServices) {
+    queue_indexes(services, services.registry.modules(), true);
+}
+
+fn queue_indexes(
+    services: &AppServices,
+    modules: impl IntoIterator<Item = ModuleMeta>,
+    force: bool,
+) {
     static WORKER: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     let Some(index) = services.search_index.clone() else {
         return;
@@ -299,7 +312,7 @@ fn queue_indexes(services: &AppServices, modules: impl IntoIterator<Item = Modul
                     | ModuleKind::StrongsDictionary
                     | ModuleKind::GeneralDictionary
                     | ModuleKind::Commentary
-            ) && index.needs_refresh(meta)
+            ) && (force || index.needs_refresh(meta))
                 && pending.lock().insert(meta.id.to_string())
         })
         .collect();
@@ -314,7 +327,12 @@ fn queue_indexes(services: &AppServices, modules: impl IntoIterator<Item = Modul
             lower_index_worker_priority();
             let _worker = WORKER.lock();
             for meta in jobs {
-                if let Err(error) = index.refresh(&meta) {
+                let result = if force {
+                    index.force_refresh(&meta)
+                } else {
+                    index.refresh(&meta)
+                };
+                if let Err(error) = result {
                     log::warn!("index rebuild failed for {}: {error:#}", meta.id);
                 }
                 worker_pending.lock().remove(meta.id.0.as_str());

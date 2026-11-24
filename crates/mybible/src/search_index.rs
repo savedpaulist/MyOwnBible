@@ -158,7 +158,17 @@ impl SearchIndex {
     /// Build in a private file, then publish the complete database in one move.
     /// Each query sees a complete snapshot.
     pub fn refresh(&self, meta: &ModuleMeta) -> Result<()> {
-        if !self.needs_refresh(meta) {
+        self.refresh_inner(meta, false)
+    }
+
+    /// Rebuild an index even when the source signature has not changed.
+    /// Used only by the explicit "Reindex modules" user action.
+    pub fn force_refresh(&self, meta: &ModuleMeta) -> Result<()> {
+        self.refresh_inner(meta, true)
+    }
+
+    fn refresh_inner(&self, meta: &ModuleMeta, force: bool) -> Result<()> {
+        if !force && !self.needs_refresh(meta) {
             return Ok(());
         }
         let (signature, mtime) = Self::signature(meta)?;

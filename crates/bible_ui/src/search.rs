@@ -9,19 +9,17 @@ use std::collections::BTreeSet;
 
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::IndexPath;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
-use gpui_kit::component::{Icon, IconName};
+use gpui_kit::component::{Icon, IconName, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use bible_domain::ids::ModuleId;
+use bible_domain::ids::{BookNumber, ModuleId};
 use bible_domain::ports::{ModuleCatalog as _, ModuleKind};
 use bible_domain::search::Corpus;
 
@@ -33,6 +31,36 @@ enum ResultKind {
     Bible,
     Dictionary,
     Commentary,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SearchMode {
+    Exact,
+    Partial,
+    Similar,
+}
+
+impl SearchMode {
+    fn query(self, input: &str) -> String {
+        let input = input.trim();
+        match self {
+            Self::Exact => format!("\"{}\"", input.replace('"', "\"\"")),
+            Self::Partial | Self::Similar => {
+                let separator = if self == Self::Similar { " OR " } else { " " };
+                input
+                    .split_whitespace()
+                    .map(|word| {
+                        word.trim_matches(|ch: char| {
+                            !ch.is_alphanumeric() && ch != '_' && ch != '-'
+                        })
+                    })
+                    .filter(|word| !word.is_empty())
+                    .map(|word| format!("{}*", word.trim_end_matches('*')))
+                    .collect::<Vec<_>>()
+                    .join(separator)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -83,35 +111,17 @@ fn group_info<T>(group: &shell::search::SearchModuleGroup<T>) -> (&ModuleId, Opt
     )
 }
 
-/// Пункт списка корпуса: везде / ВЗ / НЗ.
-#[derive(Clone)]
-struct CorpusOption {
-    corpus: Corpus,
-    title: &'static str,
-}
-
-impl SelectItem for CorpusOption {
-    type Value = Corpus;
-
-    fn title(&self) -> SharedString {
-        self.title.into()
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.corpus
-    }
-}
-
 pub struct SearchPanel {
     focus_handle: FocusHandle,
     query_input: Entity<InputState>,
-    corpus_select: Entity<SelectState<SearchableVec<CorpusOption>>>,
     excluded_sources: BTreeSet<ModuleId>,
-    sources_open: bool,
     source_categories: BTreeSet<&'static str>,
+    excluded_books: BTreeSet<BookNumber>,
     result_list: ListState,
     result_list_dirty: bool,
     corpus: Corpus,
+    search_mode: SearchMode,
+    respect_diacritics: bool,
     results: Option<shell::SearchResultsViewModel>,
     searching: bool,
     error: Option<String>,
@@ -119,6 +129,70 @@ pub struct SearchPanel {
     _subscriptions: Vec<Subscription>,
     expanded_categories: BTreeSet<String>,
     expanded_sources: BTreeSet<String>,
+}
+
+struct SearchSourcesWindow {
+    panel: Entity<SearchPanel>,
+}
+
+impl Render for SearchSourcesWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let scale = app_services_arc(cx)
+            .settings
+            .read()
+            .interface_scale
+            .clamp(0.8, 1.6);
+        window.set_rem_size(px(16.0 * scale));
+        let picker = self
+            .panel
+            .update(cx, |panel, cx| panel.render_source_picker(cx));
+        v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .child(
+                TitleBar::new().child(
+                    h_flex()
+                        .h_full()
+                        .px_3()
+                        .items_center()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(crate::i18n::tr(cx, "Источники и книги поиска")),
+                ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .p_3()
+                    .child(picker)
+                    .overflow_y_scrollbar(),
+            )
+    }
+}
+
+fn open_sources_window(panel: Entity<SearchPanel>, cx: &mut App) {
+    if let Some(existing) = cx
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<SearchSourcesWindow>())
+    {
+        let _ = existing.update(cx, |_, window, _| window.activate_window());
+        return;
+    }
+    cx.defer(move |cx| {
+        let window_size = size(px(620.0), px(720.0));
+        let bounds = Bounds::centered(None, window_size, cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(420.0), px(420.0))),
+            ..TitleBar::window_options()
+        };
+        if let Err(error) = gpui_kit::open_window(options, cx, |_, cx| {
+            cx.new(|_| SearchSourcesWindow { panel })
+        }) {
+            log::error!("failed to open search sources window: {error:#}");
+        }
+    });
 }
 
 impl SearchPanel {
@@ -131,29 +205,6 @@ impl SearchPanel {
             ))
         });
 
-        let corpus_options = vec![
-            CorpusOption {
-                corpus: Corpus::All,
-                title: crate::i18n::tr_static("Вся Библия"),
-            },
-            CorpusOption {
-                corpus: Corpus::OldTestament,
-                title: crate::i18n::tr_static("Ветхий Завет"),
-            },
-            CorpusOption {
-                corpus: Corpus::NewTestament,
-                title: crate::i18n::tr_static("Новый Завет"),
-            },
-        ];
-        let corpus_select = cx.new(|cx| {
-            SelectState::new(
-                SearchableVec::new(corpus_options),
-                Some(IndexPath::new(0)),
-                window,
-                cx,
-            )
-        });
-
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe_in(
             &query_input,
@@ -161,17 +212,6 @@ impl SearchPanel {
             |this, _, event: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
                     this.run_search(window, cx);
-                }
-            },
-        ));
-        subscriptions.push(cx.subscribe_in(
-            &corpus_select,
-            window,
-            |this, _, event: &SelectEvent<SearchableVec<CorpusOption>>, window, cx| {
-                if let SelectEvent::Confirm(Some(value)) = event {
-                    this.corpus = *value;
-                    this.run_search(window, cx);
-                    cx.notify();
                 }
             },
         ));
@@ -198,13 +238,14 @@ impl SearchPanel {
         Self {
             focus_handle: cx.focus_handle(),
             query_input,
-            corpus_select,
             excluded_sources: BTreeSet::new(),
-            sources_open: false,
             source_categories: BTreeSet::new(),
+            excluded_books: BTreeSet::new(),
             result_list: ListState::new(0, ListAlignment::Top, px(300.)),
             result_list_dirty: false,
             corpus: Corpus::All,
+            search_mode: SearchMode::Partial,
+            respect_diacritics: false,
             results: None,
             searching: false,
             error: None,
@@ -218,13 +259,16 @@ impl SearchPanel {
     /// Запуск поиска: сам сценарий уходит на фоновый поток (построение
     /// индекса по новому модулю — секунды), панель показывает «Ищу…».
     fn run_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let input = self.query_input.read(cx).value().to_string();
-        if input.trim().is_empty() {
+        let raw_input = self.query_input.read(cx).value().to_string();
+        if raw_input.trim().is_empty() {
             return;
         }
+        let input = self.search_mode.query(&raw_input);
         let services = app_services_arc(cx);
         let excluded = self.excluded_sources.clone();
+        let excluded_books = self.excluded_books.clone();
         let corpus = self.corpus;
+        let respect_diacritics = self.respect_diacritics;
         self.searching = true;
         self.error = None;
         cx.notify();
@@ -234,13 +278,85 @@ impl SearchPanel {
             loop {
                 let search_services = services.clone();
                 let input = input.clone();
+                let raw_input = raw_input.clone();
                 let excluded = excluded.clone();
+                let excluded_books = excluded_books.clone();
                 let result = window
                     .background_executor()
                     .spawn(async move {
-                        shell::search::search_sources(&search_services, &input, corpus, |id| {
-                            !excluded.contains(id)
-                        })
+                        let mut results = shell::search::search_sources(
+                            &search_services,
+                            &input,
+                            corpus,
+                            |id| !excluded.contains(id),
+                        )?;
+                        if !excluded_books.is_empty() {
+                            for group in &mut results.verse_groups {
+                                group.hits.retain(|hit| !excluded_books.contains(&hit.book));
+                            }
+                            for group in &mut results.commentary_groups {
+                                group.hits.retain(|hit| !excluded_books.contains(&hit.book));
+                            }
+                            results.verse_groups.retain(|group| !group.hits.is_empty());
+                            results
+                                .commentary_groups
+                                .retain(|group| !group.hits.is_empty());
+                            results.hits = results
+                                .verse_groups
+                                .iter()
+                                .flat_map(|group| group.hits.iter().cloned())
+                                .collect();
+                            results.hit_count = results.hits.len()
+                                + results
+                                    .dictionary_groups
+                                    .iter()
+                                    .map(|group| group.hits.len())
+                                    .sum::<usize>()
+                                + results
+                                    .commentary_groups
+                                    .iter()
+                                    .map(|group| group.hits.len())
+                                    .sum::<usize>();
+                        }
+                        if respect_diacritics {
+                            let needle = raw_input.trim().to_lowercase();
+                            let contains = |text: &str| text.to_lowercase().contains(&needle);
+                            for group in &mut results.verse_groups {
+                                group.hits.retain(|hit| contains(&hit.text));
+                            }
+                            for group in &mut results.dictionary_groups {
+                                group
+                                    .hits
+                                    .retain(|hit| contains(&hit.snippet) || contains(&hit.topic));
+                            }
+                            for group in &mut results.commentary_groups {
+                                group.hits.retain(|hit| contains(&hit.snippet));
+                            }
+                            results.verse_groups.retain(|group| !group.hits.is_empty());
+                            results
+                                .dictionary_groups
+                                .retain(|group| !group.hits.is_empty());
+                            results
+                                .commentary_groups
+                                .retain(|group| !group.hits.is_empty());
+                            results.hits = results
+                                .verse_groups
+                                .iter()
+                                .flat_map(|group| group.hits.iter().cloned())
+                                .collect();
+                            results.hit_count = results.hits.len()
+                                + results
+                                    .dictionary_groups
+                                    .iter()
+                                    .map(|group| group.hits.len())
+                                    .sum::<usize>()
+                                + results
+                                    .commentary_groups
+                                    .iter()
+                                    .map(|group| group.hits.len())
+                                    .sum::<usize>();
+                        }
+                        Ok::<_, anyhow::Error>(results)
                     })
                     .await;
                 let waiting = match &result {
@@ -378,7 +494,7 @@ impl SearchPanel {
             }))
     }
 
-    fn render_source_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_source_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let modules = app_services_arc(cx).registry.modules();
         let all: BTreeSet<_> = modules
             .iter()
@@ -411,11 +527,19 @@ impl SearchPanel {
         );
         for category in ["Библия", "Комментарии", "Словари"] {
             let open = self.source_categories.contains(category);
+            let category_ids: BTreeSet<_> = modules
+                .iter()
+                .filter(|meta| source_category(meta.kind) == Some(category))
+                .map(|meta| meta.id.clone())
+                .collect();
+            let category_all = category_ids
+                .iter()
+                .all(|id| !self.excluded_sources.contains(id));
             picker = picker.child(
                 Button::new(category)
                     .xsmall()
                     .ghost()
-                    .label(category)
+                    .label(crate::i18n::tr(cx, category))
                     .icon(if open {
                         IconName::ChevronDown
                     } else {
@@ -429,6 +553,22 @@ impl SearchPanel {
                     })),
             );
             if open {
+                picker = picker.child(
+                    Checkbox::new(SharedString::from(format!("search-source-all-{category}")))
+                        .label(crate::i18n::tr(cx, "Все"))
+                        .checked(category_all)
+                        .on_click(cx.listener(move |this, checked, window, cx| {
+                            for id in &category_ids {
+                                if *checked {
+                                    this.excluded_sources.remove(id);
+                                } else {
+                                    this.excluded_sources.insert(id.clone());
+                                }
+                            }
+                            this.run_search(window, cx);
+                            cx.notify();
+                        })),
+                );
                 for meta in modules
                     .iter()
                     .filter(|meta| source_category(meta.kind) == Some(category))
@@ -455,10 +595,93 @@ impl SearchPanel {
                 }
             }
         }
-        picker
-            .id("search-source-picker")
-            .max_h(px(140.))
-            .overflow_y_scrollbar()
+        let books = app_services_arc(cx)
+            .default_translation()
+            .map(|module| app_services_arc(cx).registry.lock().books_of(&module))
+            .unwrap_or_default();
+        picker = picker.child(
+            div()
+                .mt_3()
+                .mb_1()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(crate::i18n::tr(cx, "Выбранные книги Библии")),
+        );
+        for (group, from, to) in BOOK_GROUPS {
+            let group_books: Vec<_> = books
+                .iter()
+                .filter(|book| (*from..=*to).contains(&book.book_number))
+                .cloned()
+                .collect();
+            if group_books.is_empty() {
+                continue;
+            }
+            let open = self.source_categories.contains(group);
+            let all_selected = group_books
+                .iter()
+                .all(|book| !self.excluded_books.contains(&BookNumber(book.book_number)));
+            picker = picker.child(
+                Button::new(*group)
+                    .xsmall()
+                    .ghost()
+                    .label(crate::i18n::tr(cx, group))
+                    .icon(if open {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.source_categories.insert(group) {
+                            this.source_categories.remove(group);
+                        }
+                        cx.notify();
+                    })),
+            );
+            if open {
+                let all_books = group_books
+                    .iter()
+                    .map(|book| BookNumber(book.book_number))
+                    .collect::<Vec<_>>();
+                picker = picker.child(
+                    Checkbox::new(SharedString::from(format!("search-book-all-{group}")))
+                        .label(crate::i18n::tr(cx, "Все"))
+                        .checked(all_selected)
+                        .on_click(cx.listener(move |this, checked, window, cx| {
+                            for book in &all_books {
+                                if *checked {
+                                    this.excluded_books.remove(book);
+                                } else {
+                                    this.excluded_books.insert(*book);
+                                }
+                            }
+                            this.run_search(window, cx);
+                            cx.notify();
+                        })),
+                );
+                for book in group_books {
+                    let number = BookNumber(book.book_number);
+                    picker = picker.child(
+                        Checkbox::new(SharedString::from(format!(
+                            "search-book-{}",
+                            book.book_number
+                        )))
+                        .label(book.long_name)
+                        .checked(!self.excluded_books.contains(&number))
+                        .on_click(cx.listener(
+                            move |this, checked, window, cx| {
+                                if *checked {
+                                    this.excluded_books.remove(&number);
+                                } else {
+                                    this.excluded_books.insert(number);
+                                }
+                                this.run_search(window, cx);
+                                cx.notify();
+                            },
+                        )),
+                    );
+                }
+            }
+        }
+        picker.id("search-source-picker").into_any_element()
     }
 
     fn result_row(&self, row: ResultRow, cx: &mut Context<Self>) -> AnyElement {
@@ -481,7 +704,13 @@ impl SearchPanel {
                     ),
                 };
                 return self
-                    .group_trigger(key.into(), title.into(), count, true, cx)
+                    .group_trigger(
+                        key.into(),
+                        crate::i18n::tr(cx, title).to_string(),
+                        count,
+                        true,
+                        cx,
+                    )
                     .into_any_element();
             }
             ResultRow::Source(kind, group) => {
@@ -603,10 +832,15 @@ impl SearchPanel {
             (theme.muted_foreground, theme.danger, theme.accent)
         };
         if let Some(error) = &self.error {
+            let message = if crate::i18n::is_english(cx) {
+                format!("Search error: {error:#}")
+            } else {
+                format!("Ошибка поиска: {error:#}")
+            };
             return div()
                 .p_4()
                 .text_color(danger)
-                .child(format!("Ошибка поиска: {error:#}"))
+                .child(message)
                 .into_any_element();
         }
         let Some(results) = &self.results else {
@@ -662,14 +896,22 @@ impl SearchPanel {
             div()
                 .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
                 .text_color(muted_fg)
-                .child(format!("Найдено: {}", results.hit_count)),
+                .child(if crate::i18n::is_english(cx) {
+                    format!("Found: {}", results.hit_count)
+                } else {
+                    format!("Найдено: {}", results.hit_count)
+                }),
         );
         if !results.building.is_empty() {
             header = header.child(
                 div()
                     .text_size(px(crate::ui_scale::panel_font_size(cx, 12.0)))
                     .text_color(accent)
-                    .child(format!("Индексируется: {}", results.building.join(", "))),
+                    .child(if crate::i18n::is_english(cx) {
+                        format!("Indexing: {}", results.building.join(", "))
+                    } else {
+                        format!("Индексируется: {}", results.building.join(", "))
+                    }),
             );
         }
 
@@ -746,6 +988,18 @@ fn source_category(kind: ModuleKind) -> Option<&'static str> {
     }
 }
 
+const BOOK_GROUPS: &[(&str, i64, i64)] = &[
+    ("Тора", 10, 50),
+    ("Исторические книги", 60, 190),
+    ("Поэтические книги", 220, 260),
+    ("Большие пророки", 290, 330),
+    ("Малые пророки", 340, 460),
+    ("Евангелия и Деяния", 470, 510),
+    ("Послания Павла", 520, 650),
+    ("Соборные послания", 660, 720),
+    ("Откровение", 730, 730),
+];
+
 impl Focusable for SearchPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -783,7 +1037,7 @@ impl Render for SearchPanel {
                             .gap_2()
                             .child(
                                 div()
-                                    .flex_1()
+                                    .w(relative(0.5))
                                     .min_w_0()
                                     .child(Input::new(&self.query_input)),
                             )
@@ -795,19 +1049,13 @@ impl Render for SearchPanel {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.run_search(window, cx);
                                     })),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
+                            )
                             .child(
                                 Button::new("search-sources")
                                     .xsmall()
                                     .label(crate::i18n::tr(cx, "Источники"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sources_open = !this.sources_open;
-                                        cx.notify();
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        open_sources_window(cx.entity(), cx);
                                     })),
                             )
                             .child(
@@ -823,26 +1071,89 @@ impl Render for SearchPanel {
                                         this.result_list.reset(0);
                                         this.expanded_categories.clear();
                                         this.expanded_sources.clear();
+                                        this.excluded_sources.clear();
+                                        this.excluded_books.clear();
                                         this.query_input.update(cx, |input, cx| {
                                             input.set_value("", window, cx)
                                         });
                                         cx.notify();
                                     })),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(Select::new(&self.corpus_select).small()),
                             ),
                     )
-                    .when(self.sources_open, |header| {
-                        header.child(self.render_source_picker(cx))
-                    }),
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(
+                                Button::new("search-mode-exact")
+                                    .xsmall()
+                                    .when(self.search_mode == SearchMode::Exact, |button| {
+                                        button.primary()
+                                    })
+                                    .label(crate::i18n::tr(cx, "Точное"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.search_mode = SearchMode::Exact;
+                                        this.run_search(window, cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("search-mode-partial")
+                                    .xsmall()
+                                    .when(self.search_mode == SearchMode::Partial, |button| {
+                                        button.primary()
+                                    })
+                                    .label(crate::i18n::tr(cx, "Частичное"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.search_mode = SearchMode::Partial;
+                                        this.run_search(window, cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("search-mode-similar")
+                                    .xsmall()
+                                    .when(self.search_mode == SearchMode::Similar, |button| {
+                                        button.primary()
+                                    })
+                                    .label(crate::i18n::tr(cx, "Похожее"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.search_mode = SearchMode::Similar;
+                                        this.run_search(window, cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Checkbox::new("search-diacritics")
+                                    .label(crate::i18n::tr(cx, "Учитывать диакритику/огласовки"))
+                                    .checked(self.respect_diacritics)
+                                    .on_click(cx.listener(|this, checked, window, cx| {
+                                        this.respect_diacritics = *checked;
+                                        this.run_search(window, cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
             )
             .child(div().flex_1().min_h_0().child(self.render_results(cx)))
             .when(!crate::ui_scale::panel_font_family(cx).is_empty(), |root| {
                 root.font_family(crate::ui_scale::panel_font_family(cx))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SearchMode;
+
+    #[test]
+    fn search_modes_build_stable_fts_queries() {
+        assert_eq!(
+            SearchMode::Exact.query("благодать и истина"),
+            "\"благодать и истина\""
+        );
+        assert_eq!(SearchMode::Partial.query("благо мир"), "благо* мир*");
+        assert_eq!(SearchMode::Similar.query("благо мир"), "благо* OR мир*");
+        assert_eq!(SearchMode::Partial.query("\"благо\""), "благо*");
     }
 }

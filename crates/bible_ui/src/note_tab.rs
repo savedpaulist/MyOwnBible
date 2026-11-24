@@ -539,15 +539,28 @@ impl Render for NoteTab {
                 )
         });
 
+        let note_typography = app_services(cx).settings.read();
+        let configured_font_family = note_typography.notes_font_family.clone();
+        let editor_font_family = if configured_font_family.is_empty() {
+            cx.theme().font_family.clone()
+        } else {
+            configured_font_family.clone().into()
+        };
+        let font_size = note_typography.notes_font_size.clamp(10.0, 40.0);
+        drop(note_typography);
+
         let body: AnyElement = match self.mode {
             NoteMode::Edit => v_flex()
                 .size_full()
                 .child(crate::note_markup::toolbar(editor, &self.relpath, cx))
                 .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .child(Editor::new(editor).h(relative(1.)).bordered(false)),
+                    div().flex_1().min_h_0().child(
+                        Editor::new(editor)
+                            .h(relative(1.))
+                            .bordered(false)
+                            .font_family(editor_font_family)
+                            .text_size(px(font_size)),
+                    ),
                 )
                 .into_any_element(),
             NoteMode::Preview => {
@@ -557,13 +570,12 @@ impl Render for NoteTab {
             }
         };
 
-        let font_family = crate::ui_scale::panel_font_family(cx);
         v_flex()
             .size_full()
             .min_h_0()
-            .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
-            .when(!font_family.is_empty(), |root| {
-                root.font_family(font_family)
+            .text_size(px(font_size))
+            .when(!configured_font_family.is_empty(), |root| {
+                root.font_family(configured_font_family)
             })
             .child(header)
             .when_some(conflict, |this, banner| this.child(banner))

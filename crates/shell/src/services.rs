@@ -272,23 +272,56 @@ fn strip_strong_prefix(value: &str) -> String {
         .to_string()
 }
 
-/// Кандидаты темы статьи для номера Strong's в конкретном словаре
-/// (перенос из `lookup_blocking` форка): объявленный префикс словаря
-/// (ground truth), затем G/H/голый номер и исходное написание токена.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BiblicalScript {
+    Greek,
+    Hebrew,
+    Other,
+}
+
+fn biblical_script(word: &str) -> BiblicalScript {
+    let mut greek = 0usize;
+    let mut hebrew = 0usize;
+    for ch in word.chars() {
+        let code = ch as u32;
+        if (0x0370..=0x03ff).contains(&code) || (0x1f00..=0x1fff).contains(&code) {
+            greek += 1;
+        } else if (0x0590..=0x05ff).contains(&code) || (0xfb1d..=0xfb4f).contains(&code) {
+            hebrew += 1;
+        }
+    }
+    match greek.cmp(&hebrew) {
+        std::cmp::Ordering::Greater if greek > 0 => BiblicalScript::Greek,
+        std::cmp::Ordering::Less if hebrew > 0 => BiblicalScript::Hebrew,
+        _ => BiblicalScript::Other,
+    }
+}
+
+fn expected_strong_prefix(word: &str, book: BookNumber) -> char {
+    match biblical_script(word) {
+        BiblicalScript::Greek => 'G',
+        BiblicalScript::Hebrew => 'H',
+        BiblicalScript::Other if book.0 < 470 => 'H',
+        BiblicalScript::Other => 'G',
+    }
+}
+
+/// Candidate topics for one dictionary. The opposite biblical language is
+/// deliberately never tried: `G25` and `H25` are unrelated entries.
 fn strong_topic_candidates(
-    dict_prefix: Option<&str>,
+    expected_prefix: char,
     strong_clean: &str,
     raw: Option<&str>,
 ) -> Vec<String> {
-    let mut candidates: Vec<String> = Vec::with_capacity(5);
-    if let Some(prefix) = dict_prefix {
-        candidates.push(format!("{prefix}{strong_clean}"));
-    }
-    candidates.push(format!("G{strong_clean}"));
-    candidates.push(format!("H{strong_clean}"));
+    let mut candidates: Vec<String> = Vec::with_capacity(3);
+    candidates.push(format!("{expected_prefix}{strong_clean}"));
     candidates.push(strong_clean.to_string());
     if let Some(raw) = raw
         && raw != strong_clean
+        && raw.chars().next().is_none_or(|prefix| {
+            !matches!(prefix, 'G' | 'g' | 'H' | 'h')
+                || prefix.eq_ignore_ascii_case(&expected_prefix)
+        })
         && !candidates.iter().any(|c| c == raw)
     {
         candidates.push(raw.to_string());
@@ -309,20 +342,12 @@ pub fn describe_word(
     verse: u16,
     token: &bible_domain::verse::VerseToken,
 ) -> WordDescription {
-    // Префикс Strong's — из info модуля; fallback по канону (как в форке).
-    let meta = services.registry.module(module);
+    // The visible word is authoritative for original-language modules.
+    // Translations fall back to the canonical testament boundary.
+    let expected_prefix = expected_strong_prefix(&token.text, book);
     let strong = token.strong.as_ref().map(|number| {
-        let prefix = meta
-            .as_ref()
-            .and_then(|m| m.strong_prefix.clone())
-            .unwrap_or_else(|| {
-                if book.0 < 470 {
-                    "H".to_string()
-                } else {
-                    "G".to_string()
-                }
-            });
-        format!("{prefix}{number}")
+        let number = strip_strong_prefix(number);
+        format!("{expected_prefix}{number}")
     });
 
     // Режим «Авто» использует Strong's-словари раньше обычных;
@@ -378,11 +403,9 @@ pub fn describe_word(
     if let Some(strong) = &strong {
         let strong_clean = strip_strong_prefix(strong);
         for dict in &strong_search_order {
-            for topic in strong_topic_candidates(
-                dict.strong_prefix.as_deref(),
-                &strong_clean,
-                token.strong.as_deref(),
-            ) {
+            for topic in
+                strong_topic_candidates(expected_prefix, &strong_clean, token.strong.as_deref())
+            {
                 if let Some(found) = registry.dictionary_entry_full(&dict.id, &topic) {
                     source = Some((dict.id.clone(), topic));
                     entry = Some(found);
@@ -668,6 +691,113 @@ mod tests {
         assert_eq!(
             description.morph_gloss.as_deref(),
             Some("Глагол, Аорист активный, 3 лицо ед. ч.")
+        );
+    }
+
+    #[test]
+    fn describe_word_uses_testament_for_translated_words() {
+        let dir = tempfile::tempdir().unwrap();
+        write_bible(dir.path(), "RUS");
+        let path = dir.path().join("RUS.sqlite3");
+        let connection = sqlez::connection::Connection::open_file(path.to_str().unwrap());
+        connection
+            .exec("UPDATE info SET value = 'ru' WHERE name = 'strong_numbers_prefix'")
+            .unwrap()()
+        .unwrap();
+        drop(connection);
+        let services = services(dir.path());
+
+        let mut translated = token();
+        translated.text = "любовь".to_string();
+        let old = describe_word(
+            &services,
+            &ModuleId::from("RUS"),
+            BookNumber(10),
+            "Бытие",
+            1,
+            1,
+            &translated,
+        );
+        let new = describe_word(
+            &services,
+            &ModuleId::from("RUS"),
+            BookNumber(500),
+            "Иоанн",
+            3,
+            16,
+            &translated,
+        );
+        assert_eq!(old.strong.as_deref(), Some("H25"));
+        assert_eq!(new.strong.as_deref(), Some("G25"));
+    }
+
+    #[test]
+    fn describe_word_uses_visible_biblical_script_before_testament() {
+        let dir = tempfile::tempdir().unwrap();
+        write_bible(dir.path(), "SRC");
+        let services = services(dir.path());
+
+        let greek = describe_word(
+            &services,
+            &ModuleId::from("SRC"),
+            BookNumber(10),
+            "Бытие",
+            1,
+            1,
+            &token(),
+        );
+        let mut hebrew_token = token();
+        hebrew_token.text = "אָהַב".to_string();
+        let hebrew = describe_word(
+            &services,
+            &ModuleId::from("SRC"),
+            BookNumber(500),
+            "Иоанн",
+            1,
+            1,
+            &hebrew_token,
+        );
+        assert_eq!(greek.strong.as_deref(), Some("G25"));
+        assert_eq!(hebrew.strong.as_deref(), Some("H25"));
+        assert_eq!(
+            strong_topic_candidates('H', "25", Some("G25")),
+            vec!["H25".to_string(), "25".to_string()]
+        );
+    }
+
+    #[test]
+    fn describe_word_never_substitutes_opposite_language_topic() {
+        let dir = tempfile::tempdir().unwrap();
+        write_bible(dir.path(), "RUS");
+        write_strongs(dir.path(), "BOTH", false, false, "греческая статья");
+        let dictionary = dir.path().join("BOTH.dictionary.sqlite3");
+        let connection = sqlez::connection::Connection::open_file(dictionary.to_str().unwrap());
+        connection
+            .exec("INSERT INTO dictionary VALUES('H25', 'еврейская статья')")
+            .unwrap()()
+        .unwrap();
+        drop(connection);
+        let services = services(dir.path());
+
+        // Даже если исходный модуль положил в токен G25, русский текст ВЗ
+        // должен искать именно H25 в колонке dictionary.topic.
+        let mut translated = token();
+        translated.text = "любовь".to_string();
+        translated.strong = Some("G25".to_string());
+        let description = describe_word(
+            &services,
+            &ModuleId::from("RUS"),
+            BookNumber(10),
+            "Бытие",
+            1,
+            1,
+            &translated,
+        );
+        assert_eq!(description.strong.as_deref(), Some("H25"));
+        assert_eq!(description.strong_topic.as_deref(), Some("H25"));
+        assert_eq!(
+            description.strong_entry.as_deref(),
+            Some("еврейская статья")
         );
     }
 

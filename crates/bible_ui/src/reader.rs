@@ -51,6 +51,30 @@ use crate::text::strip_markup;
 /// Граница Ветхого/Нового завета в нумерации MyBible (как в форке).
 const OLD_TESTAMENT_BOUNDARY: i64 = 470;
 
+fn bible_copy_text(
+    cx: &App,
+    text: &str,
+    module: Option<&ModuleId>,
+    book_short: &str,
+    chapter: u16,
+    verse_from: u16,
+    verse_to: Option<u16>,
+) -> String {
+    let settings = app_services(cx).settings.read();
+    if !settings.copy_bible_include_reference {
+        return text.to_string();
+    }
+    let range = verse_to
+        .filter(|end| *end != verse_from)
+        .map_or_else(String::new, |end| format!("-{end}"));
+    let module = module.map_or_else(String::new, |module| format!(" · {module}"));
+    let reference = format!("{book_short} {chapter}:{verse_from}{range}{module}");
+    match settings.copy_reference_position {
+        shell::settings::CopyReferencePosition::Start => format!("{reference}\n{text}"),
+        shell::settings::CopyReferencePosition::End => format!("{text}\n{reference}"),
+    }
+}
+
 /// Строка списка: заголовок главы или один стих.
 #[derive(Debug, Clone)]
 enum Row {
@@ -1663,9 +1687,19 @@ impl ReaderPanel {
                                 PopupMenuItem::new(crate::i18n::tr_static("Копировать слово"))
                                     .on_click({
                                         let text = token.text.clone();
+                                        let module = module.clone();
+                                        let book_short = book_short.clone();
                                         move |_, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
-                                                text.clone(),
+                                                bible_copy_text(
+                                                    cx,
+                                                    &text,
+                                                    module.as_ref(),
+                                                    &book_short,
+                                                    chapter,
+                                                    verse,
+                                                    None,
+                                                ),
                                             ));
                                         }
                                     }),
@@ -1674,9 +1708,19 @@ impl ReaderPanel {
                                 PopupMenuItem::new(crate::i18n::tr_static("Копировать стих"))
                                     .on_click({
                                         let text = verse_text.clone();
+                                        let module = module.clone();
+                                        let book_short = book_short.clone();
                                         move |_, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
-                                                text.clone(),
+                                                bible_copy_text(
+                                                    cx,
+                                                    &text,
+                                                    module.as_ref(),
+                                                    &book_short,
+                                                    chapter,
+                                                    verse,
+                                                    None,
+                                                ),
                                             ));
                                         }
                                     }),
@@ -2813,7 +2857,7 @@ impl Render for ReaderPanel {
                     reading_column_width,
                 )
             };
-            list(self.list_state.clone(), move |ix, _, cx| {
+            let verses = list(self.list_state.clone(), move |ix, _, cx| {
                 Self::render_row(
                     ix,
                     &rows[ix],
@@ -2833,8 +2877,13 @@ impl Render for ReaderPanel {
                 )
             })
             .with_sizing_behavior(ListSizingBehavior::Auto)
-            .size_full()
-            .into_any_element()
+            .size_full();
+            div()
+                .relative()
+                .size_full()
+                .child(verses)
+                .vertical_scrollbar(&self.list_state)
+                .into_any_element()
         };
 
         v_flex()

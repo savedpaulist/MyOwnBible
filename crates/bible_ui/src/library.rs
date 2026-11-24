@@ -144,10 +144,17 @@ impl Render for LibraryPanel {
                     .p_3()
                     .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!(
-                        "Модули не найдены. Проверьте путь в настройках: {}",
-                        modules_dir.display()
-                    )),
+                    .child(if crate::i18n::is_english(cx) {
+                        format!(
+                            "No modules found. Download compatible MyBible modules from https://www.ph4.ru/b4_1.php, unpack the archives into one folder, then choose that folder in Settings → General → Application folders. Current path: {}",
+                            modules_dir.display()
+                        )
+                    } else {
+                        format!(
+                            "Модули не найдены. Скачайте совместимые модули MyBible на https://www.ph4.ru/b4_1.php, распакуйте файлы из архивов в одну общую папку, затем укажите эту папку в Настройки → Общие → Папки приложения. Текущий путь: {}",
+                            modules_dir.display()
+                        )
+                    }),
             );
         }
 

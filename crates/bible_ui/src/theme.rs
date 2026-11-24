@@ -5,6 +5,7 @@
 //! converted into the palette consumed by gpui-kit at startup. No Zed theme
 //! file is modified.
 
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::theme::{Theme, ThemeRegistry};
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -12,6 +13,7 @@ use serde_json::{Value, json};
 use crate::services::app_services;
 
 const EVERFOREST_JSON: &str = include_str!("../assets/themes/everforest.json");
+include!(concat!(env!("OUT_DIR"), "/embedded_zed_themes.rs"));
 
 /// Theme applied when a saved theme has disappeared or cannot be loaded.
 pub const DEFAULT_THEME: &str = "Everforest Dark Hard";
@@ -24,7 +26,7 @@ pub fn init(cx: &mut App) {
         return;
     }
 
-    load_external_zed_themes(cx);
+    load_zed_themes(cx);
 
     let saved = app_services(cx).settings.read().theme.clone();
     apply(&saved, cx);
@@ -63,6 +65,14 @@ pub fn apply(name: &str, cx: &mut App) {
                 theme.apply_config(&config);
                 // A modal backdrop dims the workspace in both light and dark palettes.
                 theme.overlay = gpui_kit::hsla(0., 0., 0., 0.48);
+                // A single quiet scrollbar treatment across reading, lists,
+                // popups and editors. The transparent track does not add a
+                // visual gutter; the rounded thumb stays visible and gains
+                // contrast only on hover/drag.
+                theme.scrollbar_mode = ScrollbarMode::Always;
+                theme.scrollbar = theme.background.opacity(0.0);
+                theme.scrollbar_thumb = theme.foreground.opacity(0.22);
+                theme.scrollbar_thumb_hover = theme.accent.opacity(0.62);
                 if !ui_font_family.is_empty() {
                     theme.font_family = ui_font_family.into();
                 }
@@ -101,49 +111,110 @@ pub fn select(name: &str, cx: &mut App) {
     crate::navigation::notify_settings_changed(cx);
 }
 
-fn load_external_zed_themes(cx: &mut App) {
+fn load_zed_themes(cx: &mut App) {
     let mut loaded = 0usize;
+    for (name, contents) in EMBEDDED_ZED_THEMES {
+        loaded += register_zed_theme(cx, name, contents);
+    }
     for source in shell::themes::external_sources() {
-        let family: Value = match serde_json::from_str(&source.contents) {
-            Ok(value) => value,
-            Err(error) => {
-                log::warn!("invalid theme JSON {}: {error}", source.path.display());
-                continue;
-            }
-        };
-        let converted = match convert_zed_theme_family(&family, EVERFOREST_JSON) {
-            Ok(converted) => converted,
-            Err(error) => {
-                log::debug!("skip non-Zed theme {}: {error:#}", source.path.display());
-                continue;
-            }
-        };
-        let converted_json = match serde_json::to_string(&converted) {
-            Ok(json) => json,
-            Err(error) => {
-                log::warn!(
-                    "cannot serialize converted theme {}: {error}",
-                    source.path.display()
-                );
-                continue;
-            }
-        };
-        match ThemeRegistry::global_mut(cx).load_themes_from_str(&converted_json) {
-            Ok(()) => {
-                loaded += converted["themes"]
-                    .as_array()
-                    .map_or(0, |themes| themes.len())
-            }
-            Err(error) => log::warn!(
-                "cannot register Zed theme {}: {error:#}",
-                source.path.display()
-            ),
-        }
+        loaded += register_zed_theme(cx, &source.path.display().to_string(), &source.contents);
     }
 
     if loaded > 0 {
-        log::info!("loaded {loaded} Zed-compatible themes from local theme folders");
+        log::info!("loaded {loaded} embedded or locally installed Zed-compatible themes");
     }
+}
+
+fn register_zed_theme(cx: &mut App, name: &str, contents: &str) -> usize {
+    let family: Value = match parse_zed_json(contents) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!("invalid theme JSON {name}: {error}");
+            return 0;
+        }
+    };
+    let converted = match convert_zed_theme_family(&family, EVERFOREST_JSON) {
+        Ok(converted) => converted,
+        Err(error) => {
+            log::debug!("skip non-Zed theme {name}: {error:#}");
+            return 0;
+        }
+    };
+    let count = converted["themes"]
+        .as_array()
+        .map_or(0, |themes| themes.len());
+    let converted_json = match serde_json::to_string(&converted) {
+        Ok(json) => json,
+        Err(error) => {
+            log::warn!("cannot serialize converted theme {name}: {error}");
+            return 0;
+        }
+    };
+    match ThemeRegistry::global_mut(cx).load_themes_from_str(&converted_json) {
+        Ok(()) => count,
+        Err(error) => {
+            log::warn!("cannot register Zed theme {name}: {error:#}");
+            0
+        }
+    }
+}
+
+/// Zed accepts JSON with JavaScript-style comments. Theme extensions in its
+/// catalogue use that form, while `serde_json` intentionally does not.
+fn parse_zed_json(contents: &str) -> serde_json::Result<Value> {
+    match serde_json::from_str(contents) {
+        Ok(value) => Ok(value),
+        Err(_) => serde_json::from_str(&strip_json_comments(contents)),
+    }
+}
+
+fn strip_json_comments(contents: &str) -> String {
+    let mut output = String::with_capacity(contents.len());
+    let mut chars = contents.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            output.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            output.push(ch);
+        } else if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            for comment in chars.by_ref() {
+                if comment == '\n' {
+                    output.push('\n');
+                    break;
+                }
+            }
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            let mut previous = '\0';
+            for comment in chars.by_ref() {
+                if comment == '\n' {
+                    output.push('\n');
+                }
+                if previous == '*' && comment == '/' {
+                    break;
+                }
+                previous = comment;
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
 }
 
 /// Convert official Zed Theme Family JSON into the color palette format used
@@ -389,7 +460,10 @@ mod tests {
     use gpui_kit::component::theme::ThemeSet;
     use serde_json::json;
 
-    use super::{DEFAULT_THEME, EVERFOREST_JSON, convert_zed_theme_family};
+    use super::{
+        DEFAULT_THEME, EMBEDDED_ZED_THEMES, EVERFOREST_JSON, convert_zed_theme_family,
+        parse_zed_json,
+    };
 
     #[test]
     fn embedded_theme_set_parses_with_six_themes() {
@@ -428,5 +502,28 @@ mod tests {
         let set: ThemeSet = serde_json::from_value(converted).unwrap();
         assert_eq!(set.themes.len(), 1);
         assert_eq!(set.themes[0].name, "Example Night");
+    }
+
+    #[test]
+    fn bundled_zed_theme_files_are_convertible() {
+        assert!(!EMBEDDED_ZED_THEMES.is_empty());
+        let mut converted_count = 0usize;
+        for (name, contents) in EMBEDDED_ZED_THEMES {
+            let family = parse_zed_json(contents).unwrap_or_else(|error| panic!("{name}: {error}"));
+            match convert_zed_theme_family(&family, EVERFOREST_JSON) {
+                Ok(converted) => {
+                    converted_count += converted["themes"].as_array().map_or(0, Vec::len);
+                }
+                Err(error) => {
+                    // The downloaded Zed extension directory can also contain
+                    // extension metadata JSON; only theme-family files count.
+                    assert!(
+                        !name.replace('\\', "/").contains("/themes/"),
+                        "theme file {name} cannot be converted: {error:#}"
+                    );
+                }
+            }
+        }
+        assert!(converted_count > 0);
     }
 }

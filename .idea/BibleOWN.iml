@@ -14,6 +14,7 @@
       <sourceFolder url="file://$MODULE_DIR$/vendor/path/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/vendor/sqlez/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/vendor/sqlez_macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/mybible/examples" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

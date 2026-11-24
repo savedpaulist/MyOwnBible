@@ -10,7 +10,8 @@ use anyhow::Result;
 use bible_domain::ports::ModuleCatalog as _;
 
 pub use app_state::settings::{
-    InterfaceLanguage, LinkOpenMode, MorphologyColorScheme, Settings, TabSize,
+    CopyReferencePosition, InterfaceLanguage, LinkOpenMode, MorphologyColorScheme, Settings,
+    TabSize,
 };
 
 use crate::services::AppServices;

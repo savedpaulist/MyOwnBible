@@ -7,7 +7,7 @@ pub mod registry;
 pub mod search_index;
 
 pub use db::ReadOnlyDb;
-pub use registry::{BookEntry, DictionaryEntry, ModuleRegistry, SharedRegistry};
+pub use registry::{BookEntry, CommentaryEntry, DictionaryEntry, ModuleRegistry, SharedRegistry};
 pub use search_index::{
     CommentarySearchRow, DictionarySearchRow, IndexMeta, SearchIndex, SearchRow,
 };

@@ -58,6 +58,9 @@ pub struct Settings {
     pub reading_font_family: String,
     /// Размер текста Библии в px. 0.0 — использовать базовый размер темы.
     pub reading_font_size: f32,
+    /// Independent typography for Markdown note editor and preview.
+    pub notes_font_family: String,
+    pub notes_font_size: f32,
     /// Общий масштаб интерфейса и типографики (1.0 = 100%).
     pub interface_scale: f32,
     /// Семейство шрифта боковых панелей. Пусто — наследовать основной шрифт.
@@ -70,6 +73,12 @@ pub struct Settings {
     pub reading_line_spacing: f32,
     /// Максимальная ширина колонки текста Библии в px. 0 — без ограничения.
     pub reading_column_width: f32,
+    /// Global help markers/tooltips can be hidden by experienced users.
+    pub show_feature_hints: bool,
+    pub copy_bible_include_reference: bool,
+    pub copy_dictionary_include_reference: bool,
+    pub copy_commentary_include_reference: bool,
+    pub copy_reference_position: CopyReferencePosition,
     pub morphology_color_scheme: MorphologyColorScheme,
     pub morphology_colors: std::collections::BTreeMap<String, String>,
 }
@@ -110,6 +119,14 @@ pub enum LinkOpenMode {
     NewTab,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyReferencePosition {
+    Start,
+    #[default]
+    End,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -137,12 +154,19 @@ impl Default for Settings {
             ui_font_size: 16.0,
             reading_font_family: String::new(),
             reading_font_size: 0.0,
+            notes_font_family: String::new(),
+            notes_font_size: 16.0,
             interface_scale: 1.0,
             side_panel_font_family: String::new(),
             side_panel_font_size: 14.0,
             side_panel_font_scale: 1.0,
             reading_line_spacing: 1.0,
             reading_column_width: 0.0,
+            show_feature_hints: true,
+            copy_bible_include_reference: true,
+            copy_dictionary_include_reference: true,
+            copy_commentary_include_reference: true,
+            copy_reference_position: CopyReferencePosition::End,
             morphology_color_scheme: MorphologyColorScheme::Off,
             morphology_colors: Default::default(),
         }
@@ -452,6 +476,8 @@ mod tests {
         assert_eq!(settings.side_panel_font_scale, 1.3);
         assert_eq!(settings.reading_font_family, "");
         assert_eq!(settings.reading_font_size, 0.0);
+        assert_eq!(settings.notes_font_family, "");
+        assert_eq!(settings.notes_font_size, 16.0);
         assert_eq!(settings.reading_column_width, 880.0);
         assert_eq!(settings.reading_line_spacing, 1.25);
         assert_eq!(settings.link_open_mode, LinkOpenMode::NewTab);
@@ -474,6 +500,9 @@ mod tests {
         assert_eq!(settings.side_panel_font_scale, 1.0);
         assert_eq!(settings.reading_line_spacing, 1.0);
         assert_eq!(settings.reading_column_width, 0.0);
+        assert!(settings.show_feature_hints);
+        assert!(settings.copy_bible_include_reference);
+        assert_eq!(settings.copy_reference_position, CopyReferencePosition::End);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -12,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bible_domain::ids::{BookNumber, ModuleId, VerseRef};
+use bible_domain::ports::{ModuleCatalog as _, ModuleKind};
 use bible_domain::tags::Tag;
 use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState, ColorSelect};
 use shell::notes::{IndexEvent, NotesHandle, NotesSubscription};
@@ -26,15 +28,23 @@ use crate::services::app_services;
 enum Section {
     Dictionaries,
     Notes,
+    Comments,
     Tags,
     Chains,
     Questions,
+}
+
+#[derive(Clone)]
+struct SidebarCommentaryRow {
+    reference: VerseRef,
+    label: String,
 }
 
 impl Section {
     fn from_settings(value: &str) -> Self {
         match value {
             "notes" => Self::Notes,
+            "comments" => Self::Comments,
             "tags" => Self::Tags,
             "chains" => Self::Chains,
             "questions" => Self::Questions,
@@ -46,6 +56,7 @@ impl Section {
         match self {
             Self::Dictionaries => "dictionaries",
             Self::Notes => "notes",
+            Self::Comments => "comments",
             Self::Tags => "tags",
             Self::Chains => "chains",
             Self::Questions => "questions",
@@ -58,6 +69,7 @@ impl Section {
             match self {
                 Self::Dictionaries => "Словари",
                 Self::Notes => "Заметки",
+                Self::Comments => "Комментарии",
                 Self::Tags => "Теги",
                 Self::Chains => "Цепочки",
                 Self::Questions => "Вопросы",
@@ -69,6 +81,7 @@ impl Section {
         match self {
             Self::Dictionaries => gpui_kit::assets::IconName::BookA,
             Self::Notes => gpui_kit::assets::IconName::NotebookPen,
+            Self::Comments => gpui_kit::assets::IconName::MessageSquare,
             Self::Tags => gpui_kit::assets::IconName::Tags,
             Self::Chains => gpui_kit::assets::IconName::Link,
             Self::Questions => gpui_kit::assets::IconName::CircleQuestionMark,
@@ -88,6 +101,10 @@ pub struct SidebarView {
     /// вкладкой в центре (note_tab.rs). Создание — полем внизу списка.
     notes_list: Vec<shell::notes::NoteSummary>,
     new_note_input: Entity<InputState>,
+    new_tag_input: Entity<InputState>,
+    commentary_module: Option<ModuleId>,
+    commentary_rows: Arc<Vec<SidebarCommentaryRow>>,
+    commentary_list: ListState,
     /// Очередь событий индекса заметок с потока watcher'а; поллинг 300 мс.
     pending_events: Arc<Mutex<Vec<IndexEvent>>>,
     subscribed_index: Option<NotesHandle>,
@@ -123,6 +140,9 @@ impl SidebarView {
             InputState::new(window, cx)
                 .placeholder(crate::i18n::tr_static("Папка/Название новой заметки"))
         });
+        let new_tag_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::tr_static("Имя нового тега…"))
+        });
         let subscriptions = vec![
             // Enter в поле имени тега — переименование открытого тега.
             cx.subscribe_in(
@@ -143,6 +163,15 @@ impl SidebarView {
                     if let InputEvent::PressEnter { .. } = event {
                         let name = input.read(cx).value().to_string();
                         this.create_note(name, window, cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &new_tag_input,
+                window,
+                |this, input, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        this.create_tag(input.read(cx).value().to_string(), window, cx);
                     }
                 },
             ),
@@ -231,6 +260,10 @@ impl SidebarView {
             questions,
             notes_list: Vec::new(),
             new_note_input,
+            new_tag_input,
+            commentary_module: None,
+            commentary_rows: Arc::new(Vec::new()),
+            commentary_list: ListState::new(0, ListAlignment::Top, px(32.)),
             pending_events,
             subscribed_index: None,
             _index_token: None,
@@ -376,6 +409,59 @@ impl SidebarView {
         cx.notify();
     }
 
+    fn open_commentary_module(&mut self, module: ModuleId, cx: &mut Context<Self>) {
+        let entries = app_services(cx).registry.lock().commentary_entries(&module);
+        let mut book_labels = std::collections::HashMap::new();
+        let rows = entries
+            .into_iter()
+            .map(|entry| {
+                let book = book_labels
+                    .entry(entry.book)
+                    .or_insert_with(|| self.book_label(entry.book, cx))
+                    .clone();
+                let label = if entry.chapter_to != entry.chapter_from {
+                    format!(
+                        "{book} {}:{}–{}:{}",
+                        entry.chapter_from, entry.verse_from, entry.chapter_to, entry.verse_to
+                    )
+                } else if entry.verse_to != entry.verse_from {
+                    format!(
+                        "{book} {}:{}–{}",
+                        entry.chapter_from, entry.verse_from, entry.verse_to
+                    )
+                } else {
+                    format!("{book} {}:{}", entry.chapter_from, entry.verse_from)
+                };
+                SidebarCommentaryRow {
+                    reference: VerseRef {
+                        book: entry.book,
+                        chapter: entry.chapter_from,
+                        verse: entry.verse_from,
+                        end_verse: (entry.chapter_to == entry.chapter_from
+                            && entry.verse_to != entry.verse_from)
+                            .then_some(entry.verse_to),
+                    },
+                    label,
+                }
+            })
+            .collect::<Vec<_>>();
+        let first_reference = rows.first().map(|row| row.reference);
+        self.commentary_list.reset(rows.len());
+        self.commentary_module = Some(module.clone());
+        self.commentary_rows = Arc::new(rows);
+        if let Some(reference) = first_reference {
+            navigation::request_open_commentary(cx, module, reference);
+        }
+        cx.notify();
+    }
+
+    fn close_commentary_module(&mut self, cx: &mut Context<Self>) {
+        self.commentary_module = None;
+        self.commentary_rows = Arc::new(Vec::new());
+        self.commentary_list.reset(0);
+        cx.notify();
+    }
+
     /// Создать заметку и открыть её вкладкой в центре.
     fn create_note(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         let name = name.trim().to_string();
@@ -399,6 +485,22 @@ impl SidebarView {
     }
 
     // --- Теги (этап 21) ---------------------------------------------------
+
+    fn create_tag(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        match shell::tags::create_tag(app_services(cx), name, "green") {
+            Ok(_) => {
+                self.new_tag_input.update(cx, |input, cx| {
+                    input.set_value("", window, cx);
+                });
+                navigation::notify_tags_changed(cx);
+            }
+            Err(error) => log::error!("create tag {name}: {error:#}"),
+        }
+    }
 
     /// Перечитать список тегов и стихи открытого тега (если есть).
     /// Открытый тег мог быть переименован/удалён — синхронизируем его
@@ -531,17 +633,15 @@ impl SidebarView {
             .p_1()
             .gap(px(1.));
         if self.tags.is_empty() {
-            return list
-                .child(
-                    div()
-                        .p_2()
-                        .text_size(px(crate::ui_scale::left_font_size(cx, 14.0)))
-                        .text_color(cx.theme().muted_foreground)
-                        .child(crate::i18n::tr_static(
-                            "Тегов пока нет — поставьте первый из меню стиха («Теги стиха…»).",
-                        )),
-                )
-                .into_any_element();
+            list = list.child(
+                div()
+                    .p_2()
+                    .text_size(px(crate::ui_scale::left_font_size(cx, 14.0)))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(crate::i18n::tr_static(
+                        "Тегов пока нет — поставьте первый из меню стиха («Теги стиха…»).",
+                    )),
+            );
         }
         for tag in &self.tags {
             let tag = tag.clone();
@@ -587,7 +687,151 @@ impl SidebarView {
                     ),
             );
         }
-        list.overflow_y_scrollbar().into_any_element()
+        v_flex()
+            .w_full()
+            .h_full()
+            .min_h_0()
+            .child(list.overflow_y_scrollbar())
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_1()
+                    .p_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.new_tag_input).small()),
+                    )
+                    .child(
+                        gpui_kit::component::button::Button::new("sidebar-tag-create")
+                            .xsmall()
+                            .label(crate::i18n::tr(cx, "Добавить тег"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let name = this.new_tag_input.read(cx).value().to_string();
+                                this.create_tag(name, window, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_comments(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(module) = self.commentary_module.clone() else {
+            let modules = app_services(cx)
+                .registry
+                .modules()
+                .into_iter()
+                .filter(|module| module.kind == ModuleKind::Commentary)
+                .collect::<Vec<_>>();
+            if modules.is_empty() {
+                return div()
+                    .p_3()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(crate::i18n::tr(cx, "Модули комментариев не найдены."))
+                    .into_any_element();
+            }
+            return v_flex()
+                .id("sidebar-commentary-modules")
+                .size_full()
+                .min_h_0()
+                .p_1()
+                .gap_1()
+                .children(modules.into_iter().enumerate().map(|(index, meta)| {
+                    let module = meta.id.clone();
+                    let label = meta.description.unwrap_or_else(|| meta.id.to_string());
+                    div()
+                        .id(("sidebar-commentary-module", index))
+                        .w_full()
+                        .min_w_0()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(crate::ui_scale::row_background(index, cx))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_commentary_module(module.clone(), cx);
+                        }))
+                }))
+                .overflow_y_scrollbar()
+                .into_any_element();
+        };
+
+        let module_title = app_services(cx)
+            .registry
+            .module(&module)
+            .and_then(|meta| meta.description)
+            .unwrap_or_else(|| module.to_string());
+        let rows = self.commentary_rows.clone();
+        let module_for_rows = module.clone();
+        let results = list(self.commentary_list.clone(), move |index, _, cx| {
+            let Some(row) = rows.get(index).cloned() else {
+                return div().into_any_element();
+            };
+            let module = module_for_rows.clone();
+            v_flex()
+                .id(("sidebar-commentary-row", index))
+                .w_full()
+                .min_w_0()
+                .px_2()
+                .py_1()
+                .gap_1()
+                .rounded_md()
+                .bg(crate::ui_scale::row_background(index, cx))
+                .cursor_pointer()
+                .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(row.label.clone()),
+                )
+                .on_click(move |_, _, cx| {
+                    navigation::request_open_commentary(cx, module.clone(), row.reference);
+                })
+                .into_any_element()
+        });
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .p_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .id("sidebar-commentary-back")
+                            .p_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .child(Icon::new(gpui_kit::assets::IconName::ArrowLeft).xsmall())
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.close_commentary_module(cx)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(module_title),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(results)
+                    .vertical_scrollbar(&self.commentary_list),
+            )
+            .into_any_element()
     }
 
     /// Drill-down тега: назад, точка-переключатель цвета, имя
@@ -820,6 +1064,7 @@ impl SidebarView {
         match self.section {
             Section::Dictionaries => self.dictionaries.clone().into_any_element(),
             Section::Notes => self.render_notes(cx),
+            Section::Comments => self.render_comments(cx),
             Section::Chains => self.chains.clone().into_any_element(),
             Section::Questions => self.questions.clone().into_any_element(),
             Section::Tags => match &self.open_tag {
@@ -838,6 +1083,7 @@ impl Render for SidebarView {
         let menu = [
             Section::Dictionaries,
             Section::Notes,
+            Section::Comments,
             Section::Tags,
             Section::Chains,
             Section::Questions,
@@ -921,6 +1167,8 @@ impl Render for SidebarView {
                 .justify_center()
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_content(cx))),
             );
+        let section = self.section;
+        let content = self.render_content(cx);
         let mut layout = h_flex().h_full().child(rail);
         if self.content_visible {
             layout = layout.child(
@@ -934,7 +1182,52 @@ impl Render for SidebarView {
                     .min_h_0()
                     .border_r_1()
                     .border_color(cx.theme().border)
-                    .child(self.render_content(cx)),
+                    .child(content)
+                    .context_menu(move |menu, _, _| match section {
+                        Section::Notes => menu.item(
+                            PopupMenuItem::new(crate::i18n::tr_static("Создать новую заметку"))
+                                .on_click(|_, _, cx| {
+                                    let Some(index) = shell::notes::current(app_services(cx))
+                                    else {
+                                        return;
+                                    };
+                                    match shell::notes::create_untitled_note(&index) {
+                                        Ok(note) => navigation::request_open_note(cx, note.relpath),
+                                        Err(error) => log::error!("create note: {error:#}"),
+                                    }
+                                }),
+                        ),
+                        Section::Tags => menu.item(
+                            PopupMenuItem::new(crate::i18n::tr_static("Создать новый тег"))
+                                .on_click(|_, _, cx| {
+                                    if let Err(error) = shell::tags::create_tag(
+                                        app_services(cx),
+                                        crate::i18n::tr_static("Новый тег"),
+                                        "green",
+                                    ) {
+                                        log::error!("create tag: {error:#}");
+                                    } else {
+                                        navigation::notify_tags_changed(cx);
+                                    }
+                                }),
+                        ),
+                        Section::Chains => menu.item(
+                            PopupMenuItem::new(crate::i18n::tr_static("Создать новую цепочку"))
+                                .on_click(|_, _, cx| {
+                                    match shell::chains::create_chain(
+                                        app_services(cx),
+                                        crate::i18n::tr_static("Новая цепочка"),
+                                    ) {
+                                        Ok(chain) => {
+                                            navigation::notify_chains_changed(cx);
+                                            navigation::request_open_chain(cx, Some(chain.id));
+                                        }
+                                        Err(error) => log::error!("create chain: {error:#}"),
+                                    }
+                                }),
+                        ),
+                        _ => menu,
+                    }),
             );
         }
         let font_family = crate::ui_scale::left_font_family(cx);

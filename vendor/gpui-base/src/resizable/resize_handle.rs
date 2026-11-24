@@ -9,7 +9,9 @@ use gpui::{
 
 use crate::{AxisExt as _, InteractiveElementExt, TestSupportExt as _, theme::ActiveTheme as _};
 
-pub(crate) const HANDLE_PADDING: Pixels = px(4.);
+// Keep the painted divider at one pixel, but make the invisible grab band
+// forgiving enough for high-DPI displays and touchpads.
+pub(crate) const HANDLE_PADDING: Pixels = px(7.);
 pub(crate) const HANDLE_SIZE: Pixels = px(1.);
 
 type DragConstructor<T, E> = Box<dyn Fn(&T, &Point<Pixels>, &mut Window, &mut App) -> Entity<E>>;

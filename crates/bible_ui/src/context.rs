@@ -1581,8 +1581,11 @@ impl BasePanel for ContextPanel {
 }
 
 impl Panel for ContextPanel {
-    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::i18n::tr(cx, "СТИХ")
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.context
+            .as_ref()
+            .map(|context| context.reference_label.clone())
+            .unwrap_or_default()
     }
 }
 

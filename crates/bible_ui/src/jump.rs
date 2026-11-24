@@ -198,12 +198,13 @@ impl Render for VerseJumpPalette {
 
         if let Some(target) = self.target.clone() {
             if self.chapter_out_of_range() {
-                status = status.child(
-                    div()
-                        .text_xs()
-                        .text_color(danger)
-                        .child(format!("В этой книге всего глав: {}", target.chapter_count)),
-                );
+                status = status.child(div().text_xs().text_color(danger).child(
+                    if crate::i18n::is_english(cx) {
+                        format!("Chapters in this book: {}", target.chapter_count)
+                    } else {
+                        format!("В этой книге всего глав: {}", target.chapter_count)
+                    },
+                ));
             } else {
                 let mut label = format!("{} {}", target.book_title, target.chapter);
                 if let Some(verse) = target.verse {

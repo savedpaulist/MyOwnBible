@@ -188,8 +188,13 @@ impl DictionaryBrowser {
                 this.busy = false;
                 this.list.reset(results.len());
                 this.results = Rc::new(results);
-                this.error = (!errors.is_empty())
-                    .then(|| format!("Не удалось прочитать: {}", errors.join(", ")));
+                this.error = (!errors.is_empty()).then(|| {
+                    if crate::i18n::is_english(cx) {
+                        format!("Could not read: {}", errors.join(", "))
+                    } else {
+                        format!("Не удалось прочитать: {}", errors.join(", "))
+                    }
+                });
                 cx.notify();
             });
         });
