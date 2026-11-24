@@ -14,6 +14,7 @@ mod dictionary;
 pub mod i18n;
 pub mod jump;
 pub mod library;
+mod morphology_colors;
 pub mod navigation;
 mod note_markup;
 pub mod note_tab;

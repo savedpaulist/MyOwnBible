@@ -1542,41 +1542,20 @@ impl ReaderPanel {
         // the Windows DirectWrite renderer handles the glyph order inside each RTL run.
         let is_hebrew = crate::bidi::is_hebrew_paragraph(&clean.clean_text);
 
-        fn morphology_color(
-            morph: &str,
-            colors: &std::collections::BTreeMap<String, String>,
-            cx: &App,
-        ) -> Option<Hsla> {
-            let theme = cx.theme();
-            let head = morph.split('-').next()?;
-            let (key, fallback) = match head {
-                "PREP" => ("preposition", theme.cyan),
-                "CONJ" => ("conjunction", theme.warning),
-                "ADV" => ("adverb", theme.magenta),
-                "INJ" => ("interjection", theme.danger),
-                _ => match head.chars().next()? {
-                    'V' => ("verb", theme.red),
-                    'N' => ("noun", theme.blue),
-                    'A' => ("adjective", theme.green),
-                    'T' | 'D' => ("particle", theme.yellow),
-                    'P' | 'R' | 'C' | 'I' | 'X' | 'F' => ("pronoun", theme.info),
-                    _ => return None,
-                },
-            };
-            Some(
-                colors
-                    .get(key)
-                    .and_then(|hex| palette::parse_hex(hex))
-                    .unwrap_or(fallback),
-            )
-        }
-
         let morphology_colors = {
             let settings = app_services(cx).settings.read();
             (settings.morphology_color_scheme
                 == shell::settings::MorphologyColorScheme::PartsOfSpeech)
                 .then(|| settings.morphology_colors.clone())
         };
+        let morphology_background = marks
+            .and_then(|marks| marks.highlight.as_deref())
+            .map(|color| {
+                cx.theme()
+                    .background
+                    .blend(palette::highlight_bg(color, cx))
+            })
+            .unwrap_or_else(|| cx.theme().background);
         let tokens = &clean.tokens;
         let mut spans: Vec<AnyElement> = Vec::with_capacity(tokens.len() * 2 + 1);
         let mut cursor = 0usize;
@@ -1810,9 +1789,25 @@ impl ReaderPanel {
 
             // Пословные аннотации (этап 6, §3.6): фон слова, цвет текста,
             // подчёркивание. word_index — из парсера стиха.
-            if marks.is_none_or(|marks| marks.text_color.is_none())
+            let word_has_text_color = marks.is_some_and(|marks| {
+                marks.words.iter().any(|(word_ix, kind, _)| {
+                    *word_ix == token.word_index_in_verse && *kind == AnnotationKind::WordColor
+                })
+            });
+            let word_morphology_background = marks
+                .and_then(|marks| {
+                    marks.words.iter().find_map(|(word_ix, kind, color)| {
+                        (*word_ix == token.word_index_in_verse
+                            && *kind == AnnotationKind::Highlight)
+                            .then(|| morphology_background.blend(palette::highlight_bg(color, cx)))
+                    })
+                })
+                .unwrap_or(morphology_background);
+            if !word_has_text_color
+                && marks.is_none_or(|marks| marks.text_color.is_none())
                 && let (Some(colors), Some(morph)) = (&morphology_colors, token.morph.as_deref())
-                && let Some(color) = morphology_color(morph, colors, cx)
+                && let Some(color) =
+                    crate::morphology_colors::color(morph, colors, word_morphology_background)
             {
                 word_span = word_span.text_color(color);
             }
