@@ -200,7 +200,8 @@ pub use text::{
     TextViewState, TextViewStyle, html, markdown, markdown_ast,
 };
 pub use text_selection::{
-    TextSelection, TextSelectionContentKey, TextSelectionCoverage, TextSelectionEndpoint,
+    TextSelection, TextSelectionContentKey, TextSelectionCopy, TextSelectionCoverage,
+    TextSelectionEndpoint,
     TextSelectionEvent, TextSelectionHandle, TextSelectionLayer, TextSelectionProjection,
     TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId, TextSelectionSnapshot,
     TextSelectionWindowPoints, TouchHandleLayout,
@@ -235,8 +236,8 @@ pub use virtual_list::{VirtualList, VirtualListScrollHandle, h_virtual_list, v_v
 
 use gpui::{App, Hsla, hsla};
 
-/// Makes a text-selection background fully opaque and chooses black or white
-/// ink for the strongest readable contrast on top of it.
+/// Uses the normal text colour as an opaque selection background, then chooses
+/// opposite black or white ink. This gives text selection a true inverted look.
 pub(crate) fn high_contrast_selection(color: Hsla) -> (Hsla, Hsla) {
     let background = color.alpha(1.0);
     let foreground = if background.l > 0.56 {

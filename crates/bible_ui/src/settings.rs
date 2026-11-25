@@ -66,12 +66,14 @@ pub struct SettingsPanel {
 /// entity while it is no longer part of the workspace dock/layout.
 pub struct SettingsWindow {
     panel: Entity<SettingsPanel>,
+    initial_setup: bool,
 }
 
 impl SettingsWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             panel: cx.new(|cx| SettingsPanel::new(window, cx)),
+            initial_setup: !app_services(cx).settings.read().initial_setup_completed,
         }
     }
 }
@@ -84,6 +86,7 @@ impl Render for SettingsWindow {
             .interface_scale
             .clamp(0.8, 1.6);
         window.set_rem_size(px(16.0 * scale));
+        let initial_setup = self.initial_setup;
         v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -94,9 +97,67 @@ impl Render for SettingsWindow {
                         .px_3()
                         .items_center()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(crate::i18n::tr(cx, "Настройки")),
+                        .child(if initial_setup {
+                            if crate::i18n::is_english(cx) {
+                                "Initial setup".to_string()
+                            } else {
+                                "Первоначальная настройка".to_string()
+                            }
+                        } else {
+                            crate::i18n::tr(cx, "Настройки").to_string()
+                        }),
                 ),
             )
+            .when(initial_setup, |this| {
+                this.child(
+                    v_flex()
+                        .mx_4()
+                        .mt_3()
+                        .p_3()
+                        .gap_2()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().sidebar)
+                        .child(if crate::i18n::is_english(cx) {
+                            "Choose the interface language and module/notes folders on General, then choose a theme and scale on Appearance. Modules must be downloaded, unpacked from their archives into one folder, and that folder selected here."
+                        } else {
+                            "Выберите язык и папки модулей/заметок на странице «Общие», затем тему и масштаб на странице «Внешний вид». Модули нужно скачать, распаковать из архивов в одну папку и указать эту папку здесь."
+                        })
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("first-run-download-modules")
+                                        .small()
+                                        .label(if crate::i18n::is_english(cx) {
+                                            "Where to download modules"
+                                        } else {
+                                            "Где скачать модули"
+                                        })
+                                        .on_click(|_, _, cx| cx.open_url("https://www.ph4.ru/b4_1.php")),
+                                )
+                                .child(
+                                    Button::new("finish-first-run")
+                                        .primary()
+                                        .small()
+                                        .label(if crate::i18n::is_english(cx) {
+                                            "Finish setup"
+                                        } else {
+                                            "Завершить настройку"
+                                        })
+                                        .on_click(|_, window, cx| {
+                                            match shell::settings::update(app_services(cx), |settings| {
+                                                settings.initial_setup_completed = true;
+                                            }) {
+                                                Ok(()) => window.remove_window(),
+                                                Err(error) => log::error!("failed to finish initial setup: {error:#}"),
+                                            }
+                                        }),
+                                ),
+                        ),
+                )
+            })
             .child(div().flex_1().min_h_0().child(self.panel.clone()))
     }
 }

@@ -24,7 +24,8 @@ GPUI. Оно объединяет чтение переводов MyBible, сл�
 
 ## Быстрый старт
 
-1. Запустите приложение и откройте «Настройки» кнопкой в левом нижнем углу.
+1. При первом запуске пройдите окно первоначальной настройки: выберите язык,
+   тему, масштаб и папки приложения.
 2. В «Общие → Папки приложения» укажите папку с модулями MyBible.
 3. При необходимости укажите отдельную папку для Markdown-заметок. Её можно
    одновременно открыть в Obsidian или другом редакторе.
@@ -113,13 +114,22 @@ cargo run --release
 Для создания macOS-пакета один раз установите упаковщик и запускайте команду
 на Mac:
 
-Минимальная поддерживаемая версия — **macOS 11 Big Sur**. Deployment target
-зафиксирован одновременно для Mach-O бинарника, Metal-шейдеров и `Info.plist`;
-не переопределяйте `MACOSX_DEPLOYMENT_TARGET` при сборке.
+Минимальная поддерживаемая версия — **macOS 10.15 Catalina**. Для обычной
+debug-сборки запускайте совместимый сценарий: он проверит версию macOS,
+выставит deployment target 10.15 и сохранит всю доступную функциональность.
+
+```sh
+sh scripts/build-macos.sh
+sh scripts/build-macos.sh --release
+sh scripts/build-macos.sh --bundle --release
+```
+
+Бэкенд GPUI в проекте использует совместимый с Catalina API типов файлов и не
+линкует отсутствующий там `UniformTypeIdentifiers.framework`.
 
 ```sh
 cargo install cargo-bundle
-cargo bundle --release
+sh scripts/build-macos.sh --bundle --release
 ```
 
 Готовый пакет находится в `target/release/bundle/osx/BibleOWN.app`. Именно
@@ -136,7 +146,7 @@ otool -l target/release/bundle/osx/BibleOWN.app/Contents/MacOS/bibleown \
   | grep -A5 LC_BUILD_VERSION
 ```
 
-В обоих случаях минимальная версия должна быть `11.0`.
+В обоих случаях минимальная версия должна быть `10.15`.
 
 Для универсальной macOS-сборки Intel + Apple Silicon:
 

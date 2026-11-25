@@ -221,6 +221,7 @@ pub struct TextSelectionRegistration {
     scroll_offset: Point<Pixels>,
     scope: TextSelectionScopeId,
     document_order: u64,
+    copy_group: Option<u64>,
     paint_order: bool,
     text_bounds: Vec<Bounds<Pixels>>,
     self_scroll: bool,
@@ -238,6 +239,7 @@ impl TextSelectionRegistration {
             scroll_offset: Point::default(),
             scope: TextSelectionScopeId::default(),
             document_order: 0,
+            copy_group: None,
             paint_order: false,
             text_bounds: Vec::new(),
             self_scroll: false,
@@ -311,6 +313,12 @@ impl TextSelectionRegistration {
     /// Sets the stable logical document order.
     pub fn with_document_order(mut self, document_order: u64) -> Self {
         self.document_order = document_order;
+        self
+    }
+
+    /// Joins adjacent selected participants into one copied logical block.
+    pub fn with_copy_group(mut self, copy_group: Option<u64>) -> Self {
+        self.copy_group = copy_group;
         self
     }
 
@@ -681,22 +689,57 @@ pub enum TextSelectionEvent {
 
 struct CopyItem {
     document_order: u64,
+    copy_group: Option<u64>,
     callback: Option<CopyCallback>,
     fallback: String,
 }
 
-fn resolve_copy_items(mut items: Vec<CopyItem>, cx: &mut App) -> String {
+/// Plain selected text and the logical groups that contributed to it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextSelectionCopy {
+    pub text: String,
+    pub groups: Vec<u64>,
+}
+
+type CopyFormatter = Rc<dyn Fn(TextSelectionCopy, &App) -> String>;
+
+#[derive(Default)]
+struct TextSelectionCopyFormatter(Option<CopyFormatter>);
+
+impl Global for TextSelectionCopyFormatter {}
+
+fn resolve_copy_items(mut items: Vec<CopyItem>, cx: &mut App) -> TextSelectionCopy {
     items.sort_by_key(|item| item.document_order);
-    items
-        .into_iter()
-        .map(|item| {
-            item.callback
-                .map(|callback| callback(cx))
-                .unwrap_or(item.fallback)
-        })
-        .filter(|text| !text.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut groups = Vec::new();
+    let mut parts: Vec<(Option<u64>, String)> = Vec::new();
+    for item in items {
+        let text = item
+            .callback
+            .map(|callback| callback(cx))
+            .unwrap_or(item.fallback);
+        if let Some(group) = item.copy_group
+            && groups.last().copied() != Some(group)
+        {
+            groups.push(group);
+        }
+        if let Some((last_group, last_text)) = parts.last_mut()
+            && item.copy_group.is_some()
+            && *last_group == item.copy_group
+        {
+            last_text.push_str(&text);
+        } else {
+            parts.push((item.copy_group, text));
+        }
+    }
+    TextSelectionCopy {
+        text: parts
+            .into_iter()
+            .map(|(_, text)| text)
+            .filter(|text| !text.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        groups,
+    }
 }
 
 fn dispatch_clear_handlers(handlers: Vec<ClearHandler>, cx: &mut App) {
@@ -864,9 +907,10 @@ impl SelectableTextState {
         }
     }
 
-    fn copy_item(&self, document_order: u64) -> Option<CopyItem> {
+    fn copy_item(&self, document_order: u64, copy_group: Option<u64>) -> Option<CopyItem> {
         (self.snapshot.is_some() || self.local_selection).then(|| CopyItem {
             document_order,
+            copy_group,
             callback: self.copy.clone(),
             fallback: self
                 .projected_copy_text
@@ -1019,7 +1063,7 @@ impl TextSelectionHandle {
     pub(crate) fn projected_copy_text(&self, cx: &App) -> Option<String> {
         self.0
             .read(cx)
-            .copy_item(0)
+            .copy_item(0, None)
             .filter(|item| item.callback.is_none())
             .map(|item| item.fallback)
     }
@@ -1837,14 +1881,16 @@ impl WindowSelectionState {
             .values()
             .filter_map(|registration| {
                 let participant = registration.participant.upgrade()?;
-                participant.read(cx).copy_item(registration.document_order)
+                participant
+                    .read(cx)
+                    .copy_item(registration.document_order, registration.registration.copy_group)
             })
             .collect()
     }
 
     #[cfg(test)]
     fn selected_text(&self, cx: &mut App) -> String {
-        resolve_copy_items(self.copy_items(cx), cx)
+        resolve_copy_items(self.copy_items(cx), cx).text
     }
 
     /// Whether the current endpoints take in at least one character of some
@@ -2926,6 +2972,14 @@ fn with_text_selection_scope<T>(
 pub struct TextSelection;
 
 impl TextSelection {
+    /// Installs the application's final text-copy formatter.
+    pub fn set_copy_formatter(
+        formatter: impl Fn(TextSelectionCopy, &App) -> String + 'static,
+        cx: &mut App,
+    ) {
+        cx.set_global(TextSelectionCopyFormatter(Some(Rc::new(formatter))));
+    }
+
     /// Returns whether `position` hits selectable text in the active scope.
     ///
     /// Uses the current frame's registered text geometry and hitboxes without
@@ -2951,7 +3005,14 @@ impl TextSelection {
             return String::new();
         };
         let items = state.read(cx).copy_items(cx);
-        resolve_copy_items(items, cx)
+        let copy = resolve_copy_items(items, cx);
+        if cx.has_global::<TextSelectionCopyFormatter>()
+            && let Some(formatter) = cx.global::<TextSelectionCopyFormatter>().0.clone()
+        {
+            formatter(copy, cx)
+        } else {
+            copy.text
+        }
     }
 
     /// Returns whether the window has a geometry selection or any participant
@@ -5834,7 +5895,7 @@ mod tests {
             window.simulate_next_frame(cx);
 
             let items = selection_state.read(cx).copy_items(cx);
-            assert_eq!(resolve_copy_items(items, cx), "once");
+            assert_eq!(resolve_copy_items(items, cx).text, "once");
         });
     }
 

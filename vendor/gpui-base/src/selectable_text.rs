@@ -25,6 +25,7 @@ pub struct SelectableText {
     text_style: Option<TextStyleRefinement>,
     selection_color: Option<Hsla>,
     flow_selection: bool,
+    copy_group: Option<u64>,
 }
 
 impl SelectableText {
@@ -52,6 +53,7 @@ impl SelectableText {
             text_style: None,
             selection_color: None,
             flow_selection: false,
+            copy_group: None,
         }
     }
 
@@ -88,6 +90,12 @@ impl SelectableText {
     /// Treat adjoining runs as one editor-like flow when selecting in gaps.
     pub fn flow_selection(mut self) -> Self {
         self.flow_selection = true;
+        self
+    }
+
+    /// Joins adjacent selected runs carrying the same logical group on copy.
+    pub fn copy_group(mut self, group: u64) -> Self {
+        self.copy_group = Some(group);
         self
     }
 
@@ -233,6 +241,7 @@ impl Element for SelectableText {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
             .with_document_order(self.document_order)
+            .with_copy_group(self.copy_group)
             .with_flow_selection(self.flow_selection)
             .with_text_bounds(vec![bounds])
             .with_rendered_element(handle, window, cx);

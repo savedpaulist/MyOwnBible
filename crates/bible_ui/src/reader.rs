@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bible_domain::ports::VerseSource as _;
-use gpui_kit::base::{SelectableText, TextSelection, h_flex, v_flex};
+use gpui_kit::base::{SelectableText, TextSelection, TextSelectionCopy, h_flex, v_flex};
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -51,6 +51,48 @@ use crate::text::strip_markup;
 
 /// Граница Ветхого/Нового завета в нумерации MyBible (как в форке).
 const OLD_TESTAMENT_BOUNDARY: i64 = 470;
+const BIBLE_COPY_GROUP_PREFIX: u64 = 0x4249_424C_4500_0000;
+
+fn bible_copy_group(chapter: u16, verse: u16) -> u64 {
+    BIBLE_COPY_GROUP_PREFIX | (u64::from(chapter) << 16) | u64::from(verse)
+}
+
+fn decode_bible_copy_group(group: u64) -> Option<(u16, u16)> {
+    ((group & 0xFFFF_FFFF_FF00_0000) == BIBLE_COPY_GROUP_PREFIX)
+        .then_some((((group >> 16) & 0xFFFF) as u16, (group & 0xFFFF) as u16))
+}
+
+pub(crate) fn format_bible_selection(copy: TextSelectionCopy, cx: &App) -> String {
+    let refs = copy
+        .groups
+        .iter()
+        .map(|group| decode_bible_copy_group(*group))
+        .collect::<Option<Vec<_>>>();
+    let Some(refs) = refs.filter(|refs| !refs.is_empty()) else {
+        return copy.text;
+    };
+    let Some(location) = app_services(cx).current_location.lock().clone() else {
+        return copy.text;
+    };
+    let settings = app_services(cx).settings.read();
+    if !settings.copy_bible_include_reference {
+        return copy.text;
+    }
+    let (first_chapter, first_verse) = refs[0];
+    let (last_chapter, last_verse) = refs[refs.len() - 1];
+    let range = if (first_chapter, first_verse) == (last_chapter, last_verse) {
+        format!("{first_chapter}:{first_verse}")
+    } else if first_chapter == last_chapter {
+        format!("{first_chapter}:{first_verse}-{last_verse}")
+    } else {
+        format!("{first_chapter}:{first_verse}–{last_chapter}:{last_verse}")
+    };
+    let reference = format!("{} {range} · {}", location.book_short, location.module);
+    match settings.copy_reference_position {
+        shell::settings::CopyReferencePosition::Start => format!("{reference}\n{}", copy.text),
+        shell::settings::CopyReferencePosition::End => format!("{}\n{reference}", copy.text),
+    }
+}
 
 /// Направление строки чтения определяется языком всего модуля, а не
 /// отдельными символами стиха. Поэтому еврейская цитата внутри LXX не
@@ -1627,6 +1669,7 @@ impl ReaderPanel {
             .unwrap_or_else(|| cx.theme().background);
         let tokens = &clean.tokens;
         let mut spans: Vec<AnyElement> = Vec::with_capacity(tokens.len() * 2 + 1);
+        let copy_group = bible_copy_group(chapter, verse);
         let mut cursor = 0usize;
         // Обход через peekable даёт следующий диапазон за O(1), без
         // повторного поиска по оставшейся части токенов для каждого слова.
@@ -1644,6 +1687,7 @@ impl ReaderPanel {
                 spans.push(
                     SelectableText::new(("verse-chunk", id), text)
                         .flow_selection()
+                        .copy_group(copy_group)
                         .document_order(id as u64)
                         .into_any_element(),
                 );
@@ -1667,6 +1711,7 @@ impl ReaderPanel {
                 .child(
                     SelectableText::new(("verse-chunk", id), span_text)
                         .flow_selection()
+                        .copy_group(copy_group)
                         .document_order(id as u64),
                 )
                 .on_click({
@@ -1729,7 +1774,8 @@ impl ReaderPanel {
                         clean.clean_text.clone(),
                     );
                     let book_short = book_short.to_string();
-                    move |menu, _, cx| {
+                    move |menu, window, cx| {
+                        let selected_text = TextSelection::selected_text(window, cx);
                         let mut menu = menu
                             .item(
                                 PopupMenuItem::new(crate::i18n::tr_static("Копировать слово"))
@@ -1758,8 +1804,9 @@ impl ReaderPanel {
                                         let text = verse_text.clone();
                                         let module = module.clone();
                                         let book_short = book_short.clone();
+                                        let selected_text = selected_text.clone();
                                         move |_, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                            let copied = if selected_text.is_empty() {
                                                 bible_copy_text(
                                                     cx,
                                                     &text,
@@ -1768,7 +1815,12 @@ impl ReaderPanel {
                                                     chapter,
                                                     verse,
                                                     None,
-                                                ),
+                                                )
+                                            } else {
+                                                selected_text.clone()
+                                            };
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                copied,
                                             ));
                                         }
                                     }),
@@ -1913,6 +1965,7 @@ impl ReaderPanel {
                 spans.push(
                     SelectableText::new(("verse-chunk", trailing_id), trailing_text)
                         .flow_selection()
+                        .copy_group(copy_group)
                         .document_order(trailing_id as u64)
                         .into_any_element(),
                 );
@@ -1924,6 +1977,7 @@ impl ReaderPanel {
             spans.push(
                 SelectableText::new(("verse-chunk", row_ix * CHUNK_BUDGET + chunk_ix), text)
                     .flow_selection()
+                    .copy_group(copy_group)
                     .document_order((row_ix * CHUNK_BUDGET + chunk_ix) as u64)
                     .into_any_element(),
             );

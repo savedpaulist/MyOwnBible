@@ -74,6 +74,7 @@ pub fn run() {
             cx.set_global(services::Services(std::sync::Arc::new(
                 AppServices::bootstrap(),
             )));
+            gpui_kit::base::TextSelection::set_copy_formatter(reader::format_bible_selection, cx);
             i18n::sync(cx);
             // Тема — после глобала services (init читает сохранённый выбор),
             // до создания окон (они рисуются уже в ней).
@@ -117,6 +118,14 @@ pub fn run() {
                 }
             })
             .detach();
+
+            if !services::app_services_arc(cx)
+                .settings
+                .read()
+                .initial_setup_completed
+            {
+                settings::open_settings_window(cx);
+            }
 
             cx.activate(true);
             let services = services::app_services_arc(cx);

@@ -68,6 +68,7 @@ markdown = { opt-level = 3 }
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 gpui-base = { path = "vendor/gpui-base" }
 
 [profile.release]
@@ -87,8 +88,9 @@ shell.workspace = true
 
 # GPUI 0.3.12 precompiles its Metal library with a macOS 12 deployment
 # target. Compile the same shader source at application startup on macOS so
-# BibleOWN can run on Big Sur (11) as well. GPUI already falls back from newer
-# display-link APIs on pre-14 systems.
+# BibleOWN can run on Catalina (10.15) as well. The vendored macOS backend also
+# uses the legacy NSWorkspace file-type API instead of the macOS 11-only
+# UniformTypeIdentifiers framework.
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-pre-platform = { version = "=0.3.12", features = ["runtime_shaders"] }
 
@@ -108,8 +110,8 @@ icon = [
 category = "Education"
 short_description = "Bible study, notes, and synchronization"
 # cargo-bundle <= 0.11 spelling. Keep it alongside the current nested form so
-# both packaging workflows emit LSMinimumSystemVersion=11.0.
-osx_minimum_system_version = "11.0"
+# both packaging workflows emit LSMinimumSystemVersion=10.15.
+osx_minimum_system_version = "10.15"
 
 [package.metadata.bundle.osx]
-minimum_system_version = "11.0"
+minimum_system_version = "10.15"

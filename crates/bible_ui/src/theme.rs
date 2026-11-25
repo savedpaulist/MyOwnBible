@@ -493,8 +493,11 @@ pub fn apply(name: &str, cx: &mut App) {
                     theme.table_active = theme.warning.opacity(0.30);
                     theme.sidebar_accent = theme.accent.opacity(0.36);
                     theme.secondary_hover = theme.accent.opacity(0.32);
-                    theme.selection = theme.accent.opacity(0.38);
                 }
+                // Text selection is deliberately inverted everywhere: normal
+                // foreground becomes the solid selection fill, while the
+                // text renderer chooses opposite black/white ink above it.
+                theme.selection = theme.foreground;
                 if !ui_font_family.is_empty() {
                     theme.font_family = ui_font_family.into();
                 }

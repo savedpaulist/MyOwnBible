@@ -12,6 +12,8 @@ use crate::paths;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// The guided first-run window has been completed.
+    pub initial_setup_completed: bool,
     /// Язык интерфейса. Контент модулей Библии не переводится.
     pub interface_language: InterfaceLanguage,
     /// Каталог модулей MyBible (*.sqlite3).
@@ -141,7 +143,8 @@ pub enum CopyReferencePosition {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            interface_language: InterfaceLanguage::Russian,
+            initial_setup_completed: false,
+            interface_language: system_interface_language(),
             modules_dir: default_modules_dir(),
             notes_dir: None,
             default_translation: None,
@@ -184,6 +187,20 @@ impl Default for Settings {
             morphology_color_scheme: MorphologyColorScheme::Off,
             morphology_colors: Default::default(),
         }
+    }
+}
+
+fn system_interface_language() -> InterfaceLanguage {
+    let is_russian = sys_locale::get_locale().is_some_and(|locale| {
+        locale
+            .split(['-', '_'])
+            .next()
+            .is_some_and(|language| language.eq_ignore_ascii_case("ru"))
+    });
+    if is_russian {
+        InterfaceLanguage::Russian
+    } else {
+        InterfaceLanguage::English
     }
 }
 
