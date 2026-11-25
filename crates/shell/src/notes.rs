@@ -260,6 +260,22 @@ pub fn move_note(handle: &NotesHandle, relpath: &str, folder: &str) -> Result<No
     open_note(handle, &slash_path(&target_relative))
 }
 
+/// Permanently delete one note from the vault and immediately update the
+/// index. The UI must confirm this irreversible operation before calling it.
+pub fn delete_note(handle: &NotesHandle, relpath: &str) -> Result<()> {
+    let relative = safe_relative_path(relpath)?;
+    let absolute = handle.0.notes_dir().join(relative);
+    {
+        let _guard = crate::sync::NOTE_WRITE.lock();
+        std::fs::remove_file(&absolute)
+            .with_context(|| format!("не удалось удалить заметку {}", absolute.display()))?;
+    }
+    handle
+        .0
+        .apply_watch_events(vec![watcher::WatchEvent::Remove(absolute)])?;
+    Ok(())
+}
+
 pub fn load_templates(handle: &NotesHandle) -> Result<Vec<NoteTemplate>> {
     let path = handle.0.notes_dir().join(TEMPLATES_FILE);
     if !path.exists() {
@@ -577,6 +593,10 @@ mod tests {
         save_note(&index, "Other.md", "См. [[Theology/Faith]].\n").unwrap();
         let backlinks = note_backlinks(&index, &doc.relpath).unwrap();
         assert_eq!(backlinks.len(), 1);
+
+        delete_note(&index, &doc.relpath).unwrap();
+        assert!(!absolute_path(&index, &doc.relpath).exists());
+        assert!(open_note(&index, &doc.relpath).is_err());
     }
 
     #[test]

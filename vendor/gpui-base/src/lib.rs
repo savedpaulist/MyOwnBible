@@ -233,7 +233,19 @@ pub use undo_history::UndoHistory;
 pub use virtual_list::virtual_list;
 pub use virtual_list::{VirtualList, VirtualListScrollHandle, h_virtual_list, v_virtual_list};
 
-use gpui::App;
+use gpui::{App, Hsla, hsla};
+
+/// Makes a text-selection background fully opaque and chooses black or white
+/// ink for the strongest readable contrast on top of it.
+pub(crate) fn high_contrast_selection(color: Hsla) -> (Hsla, Hsla) {
+    let background = color.alpha(1.0);
+    let foreground = if background.l > 0.56 {
+        hsla(0.0, 0.0, 0.03, 1.0)
+    } else {
+        hsla(0.0, 0.0, 0.98, 1.0)
+    };
+    (background, foreground)
+}
 
 /// Returns whether the application is compiled for iOS or Android.
 ///
@@ -263,6 +275,26 @@ pub fn init(cx: &mut App) {
     grid_layout::init(cx);
     text::init(cx);
     root::init(cx);
+}
+
+#[cfg(test)]
+mod selection_contrast_tests {
+    use gpui::hsla;
+
+    use super::high_contrast_selection;
+
+    #[test]
+    fn selection_is_opaque_with_opposite_ink() {
+        let (dark_background, light_ink) =
+            high_contrast_selection(hsla(0.55, 0.8, 0.25, 0.2));
+        assert_eq!(dark_background.a, 1.0);
+        assert!(light_ink.l > 0.9);
+
+        let (light_background, dark_ink) =
+            high_contrast_selection(hsla(0.12, 0.8, 0.8, 0.2));
+        assert_eq!(light_background.a, 1.0);
+        assert!(dark_ink.l < 0.1);
+    }
 }
 
 #[cfg(feature = "test-support")]

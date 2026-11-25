@@ -111,6 +111,27 @@ fn english(russian: &str) -> &str {
         "Библейские ссылки" => "Bible links",
         "Перевод для новых вкладок" => "Translation for new tabs",
         "Цветовая тема" => "Color theme",
+        "Название" => "Name",
+        "Базовый цвет" => "Base color",
+        "Создать тему" => "Create theme",
+        "Редактор своей темы" => "Custom theme editor",
+        "Все цвета темы" => "All theme colors",
+        "Собрать 5 вариантов" => "Build 5 variants",
+        "Собрать и применить мою тему" => "Build and apply my theme",
+        "Введите имя и выберите базовый цвет. Приложение создаст пять гармонических вариантов с именами USER+Имя." => {
+            "Enter a name and choose a base color. The app will create five harmonic variants named USER+Name."
+        }
+        "Каждый используемый приложением цвет настраивается отдельно. Название токена показано слева, color picker — в центре, пример назначения — справа. После настройки нажмите кнопку внизу списка." => {
+            "Each color used by the app is configurable. The token is on the left, its color picker in the center, and an example on the right. Apply the theme using the button below."
+        }
+        "Удалить" => "Delete",
+        "Удалить тег?" => "Delete tag?",
+        "Удалить заметку?" => "Delete note?",
+        "Удалить цепочку?" => "Delete chain?",
+        "Удалить заметку…" => "Delete note…",
+        "Эту операцию нельзя отменить" => {
+            "This operation cannot be undone"
+        }
         "Масштаб интерфейса" => "Interface scale",
         "Размер вкладок" => "Tab size",
         "Размер иконок" => "Icon size",

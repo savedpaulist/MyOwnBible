@@ -413,18 +413,41 @@ impl ChainsPanel {
             .into_any_element()
     }
 
-    fn delete_chain(&mut self, cx: &mut Context<Self>) {
-        let Some(open) = &self.open else {
-            return;
-        };
-        let id = open.view.id.clone();
-        if let Err(error) = shell::chains::delete_chain(app_services(cx), &id) {
-            self.error = Some(format!("{error:#}"));
-        } else {
-            self.open = None;
-            navigation::notify_chains_changed(cx);
-        }
-        cx.notify();
+    fn confirm_delete_chain(
+        &mut self,
+        id: String,
+        close_open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let receiver = window.prompt(
+            PromptLevel::Critical,
+            crate::i18n::tr_static("Удалить цепочку?"),
+            Some(crate::i18n::tr_static("Эту операцию нельзя отменить")),
+            &[
+                crate::i18n::tr_static("Удалить"),
+                crate::i18n::tr_static("Отмена"),
+            ],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, window| {
+            if receiver.await != Ok(0) {
+                return;
+            }
+            let _ = this.update_in(window, |this, _, cx| {
+                if let Err(error) = shell::chains::delete_chain(app_services(cx), &id) {
+                    this.error = Some(format!("{error:#}"));
+                } else {
+                    if close_open {
+                        this.open = None;
+                    }
+                    this.reload_list(cx);
+                    navigation::notify_chains_changed(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn submit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -652,16 +675,8 @@ impl ChainsPanel {
                             .xsmall()
                             .ghost()
                             .label("✕")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let id = id_for_delete.clone();
-                                if let Err(error) =
-                                    shell::chains::delete_chain(app_services(cx), &id)
-                                {
-                                    this.error = Some(format!("{error:#}"));
-                                } else {
-                                    navigation::notify_chains_changed(cx);
-                                }
-                                cx.notify();
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.confirm_delete_chain(id_for_delete.clone(), false, window, cx);
                             })),
                     ),
             );
@@ -1119,8 +1134,9 @@ impl ChainsPanel {
                     .xsmall()
                     .ghost()
                     .label("🗑")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.delete_chain(cx);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let Some(open) = &this.open else { return };
+                        this.confirm_delete_chain(open.view.id.clone(), true, window, cx);
                     })),
             );
 

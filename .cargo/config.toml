@@ -1,0 +1,5 @@
+# Keep the Mach-O deployment target aligned with the app bundle's
+# LSMinimumSystemVersion. This applies to both Intel and Apple Silicon builds
+# and to native dependencies compiled by their build scripts.
+[env]
+MACOSX_DEPLOYMENT_TARGET = { value = "11.0", force = true }

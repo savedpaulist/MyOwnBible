@@ -146,7 +146,7 @@ impl VerseJumpPalette {
             .py_1()
             .rounded(px(6.))
             .cursor_pointer()
-            .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+            .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
             .child(
                 div()
                     .text_sm()

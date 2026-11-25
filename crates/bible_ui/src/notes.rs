@@ -432,7 +432,7 @@ impl NotesPanel {
                     .cursor_pointer()
                     .when(active, |style| style.bg(theme.accent.opacity(0.18)))
                     .when(!active, |style| {
-                        style.hover(|style| style.bg(theme.accent.opacity(0.12)))
+                        style.hover(|style| style.bg(theme.list_hover))
                     })
                     .child(
                         div()
@@ -493,7 +493,7 @@ impl NotesPanel {
                     .py_1()
                     .rounded_md()
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.accent.opacity(0.12)))
+                    .hover(|style| style.bg(theme.list_hover))
                     .child(
                         div()
                             .text_size(px(crate::ui_scale::panel_font_size(cx, 12.0)))

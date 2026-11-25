@@ -11,7 +11,11 @@
 
 use std::ops::Range;
 
-/// Слово стиха с боковыми атрибутами.
+/// Слово или внутрисловный морфологический сегмент с боковыми атрибутами.
+///
+/// В модулях оригинальных языков одно слитное написание может содержать
+/// несколько размеченных частей. Например, BHSEK+ хранит еврейский артикль
+/// и основу слова как два соседних сегмента без пробела.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerseToken {
     /// Байтовый диапазон слова внутри `CleanVerse::clean_text`.
@@ -22,7 +26,10 @@ pub struct VerseToken {
     pub strong: Option<String>,
     /// Морфологический код как в источнике, например "V-AAI-3S".
     pub morph: Option<String>,
-    /// Нулевой индекс слова среди слов своего стиха.
+    /// Нулевой индекс орфографического слова среди слов своего стиха.
+    /// Слитные морфологические сегменты имеют одинаковый индекс, чтобы
+    /// пользовательские пословные аннотации продолжали относиться ко всему
+    /// написанию и не смещались после более точного разбора.
     pub word_index_in_verse: u32,
 }
 
@@ -90,6 +97,7 @@ pub fn parse_verse_full(
     let mut clean_text = String::with_capacity(raw.len());
     let mut tokens: Vec<VerseToken> = Vec::new();
     let mut pending_word: Option<PendingWord> = None;
+    let mut next_word_index = 0u32;
     let mut in_critical = false;
     let mut had_hidden_critical = false;
 
@@ -169,12 +177,19 @@ pub fn parse_verse_full(
                             );
                             let token_offset = clean_text.len();
                             clean_text.push_str(&inner_parsed.clean_text);
+                            let inner_word_count = inner_parsed
+                                .tokens
+                                .iter()
+                                .map(|token| token.word_index_in_verse)
+                                .max()
+                                .map_or(0, |last| last + 1);
                             for mut tok in inner_parsed.tokens {
                                 tok.range.start += token_offset;
                                 tok.range.end += token_offset;
-                                tok.word_index_in_verse = tokens.len() as u32;
+                                tok.word_index_in_verse += next_word_index;
                                 tokens.push(tok);
                             }
+                            next_word_index += inner_word_count;
                         } else {
                             had_hidden_critical = true;
                         }
@@ -192,11 +207,36 @@ pub fn parse_verse_full(
         let ch = chunk.chars().next().unwrap_or('\u{FFFD}');
 
         if is_word_char(ch) {
+            // MyBible-модули оригинальных языков могут размечать несколько
+            // частей одного слитного написания независимо:
+            // `ה<S>9006</S><m>art</m>שמים<S>8064</S>`. Новый буквенный
+            // фрагмент после закрытой аннотации начинает следующий сегмент,
+            // даже если между ними нет пробела.
+            let continued_word_index = pending_word
+                .as_ref()
+                .filter(|word| word.has_inline_annotation)
+                .map(|word| word.word_index_in_verse);
+            if continued_word_index.is_some() {
+                finalize_word_with_annotation(
+                    &mut pending_word,
+                    &mut tokens,
+                    &mut clean_text,
+                    show_strong_inline,
+                    show_morph_inline,
+                );
+            }
             if pending_word.is_none() {
+                let word_index_in_verse = continued_word_index.unwrap_or_else(|| {
+                    let index = next_word_index;
+                    next_word_index += 1;
+                    index
+                });
                 pending_word = Some(PendingWord {
                     start: clean_text.len(),
                     strong: None,
                     morph: None,
+                    has_inline_annotation: false,
+                    word_index_in_verse,
                 });
             }
             clean_text.push_str(chunk);
@@ -348,6 +388,11 @@ struct PendingWord {
     start: usize,
     strong: Option<String>,
     morph: Option<String>,
+    /// Встретился хотя бы один закрытый `<S>`/`<m>` после текущего текста.
+    /// Отдельный флаг нужен для служебных BHSEK-кодов, которые намеренно не
+    /// сохраняются как настоящие номера Strong's.
+    has_inline_annotation: bool,
+    word_index_in_verse: u32,
 }
 
 fn finalize_word_with_annotation(
@@ -364,13 +409,12 @@ fn finalize_word_with_annotation(
     }
     let strong = word.strong.clone();
     let morph = word.morph.clone();
-    let word_index_in_verse = tokens.len() as u32;
     tokens.push(VerseToken {
         range: word.start..end,
         text: clean_text[word.start..end].to_string(),
         strong: word.strong,
         morph: word.morph,
-        word_index_in_verse,
+        word_index_in_verse: word.word_index_in_verse,
     });
 
     let visible_strong = strong.as_deref().filter(|_| show_strong_inline);
@@ -400,11 +444,12 @@ fn finalize_word_with_annotation(
 fn attach_strong(pending: &mut Option<PendingWord>, tokens: &mut [VerseToken], content: &str) {
     let stripped = strip_strong_prefix(content);
     if let Some(word) = pending.as_mut() {
-        if word.strong.is_none() {
+        word.has_inline_annotation = true;
+        if word.strong.is_none() && !is_bhsek_grammatical_code(&stripped) {
             word.strong = Some(stripped);
         }
     } else if let Some(last) = tokens.last_mut() {
-        if last.strong.is_none() {
+        if last.strong.is_none() && !is_bhsek_grammatical_code(&stripped) {
             last.strong = Some(stripped);
         }
     }
@@ -413,6 +458,7 @@ fn attach_strong(pending: &mut Option<PendingWord>, tokens: &mut [VerseToken], c
 fn attach_morph(pending: &mut Option<PendingWord>, tokens: &mut [VerseToken], content: &str) {
     let owned = content.to_string();
     if let Some(word) = pending.as_mut() {
+        word.has_inline_annotation = true;
         if word.morph.is_none() {
             word.morph = Some(owned);
         }
@@ -421,6 +467,16 @@ fn attach_morph(pending: &mut Option<PendingWord>, tokens: &mut [VerseToken], co
             last.morph = Some(owned);
         }
     }
+}
+
+/// BHSEK+ использует диапазон 9001–9009 не как статьи Strong's, а как
+/// служебные обозначения слитных еврейских частиц (предлоги, союз,
+/// определённый артикль и т. п.). Их значение уже задано соседним `<m>`;
+/// поиск `H9006` в обычном словаре всегда приводит к пустой статье.
+fn is_bhsek_grammatical_code(value: &str) -> bool {
+    value
+        .parse::<u16>()
+        .is_ok_and(|number| (9001..=9009).contains(&number))
 }
 
 fn strip_strong_prefix(content: &str) -> String {
@@ -664,6 +720,81 @@ mod tests {
             .collect();
         assert_eq!(words, ["בְּרֵאשִׁית", "בָּרָא", "אֱלֹהִים"]);
         assert_eq!(parsed.tokens.len(), 3);
+    }
+
+    #[test]
+    fn bhsek_splits_article_from_lexeme_and_ignores_pseudo_strong() {
+        let parsed = parse_verse("ה<S>9006</S><m>art</m>שמים<S>8064</S><m>n.mp.a</m>");
+
+        assert_eq!(parsed.clean_text, "השמים");
+        assert_eq!(parsed.tokens.len(), 2);
+        assert_eq!(parsed.tokens[0].text, "ה");
+        assert_eq!(parsed.tokens[0].range, 0..2);
+        assert_eq!(parsed.tokens[0].strong, None);
+        assert_eq!(parsed.tokens[0].morph.as_deref(), Some("art"));
+        assert_eq!(parsed.tokens[1].text, "שמים");
+        assert_eq!(parsed.tokens[1].range, 2..10);
+        assert_eq!(parsed.tokens[1].strong.as_deref(), Some("8064"));
+        assert_eq!(parsed.tokens[1].morph.as_deref(), Some("n.mp.a"));
+        assert_eq!(parsed.tokens[0].word_index_in_verse, 0);
+        assert_eq!(parsed.tokens[1].word_index_in_verse, 0);
+    }
+
+    #[test]
+    fn bhsek_keeps_multiple_joined_prefixes_as_independent_segments() {
+        let parsed =
+            parse_verse("ו<S>9005</S><m>conj</m>ב<S>9001</S><m>prep</m>ארץ<S>776</S><m>n.fs</m>");
+
+        assert_eq!(parsed.clean_text, "ובארץ");
+        assert_eq!(
+            parsed
+                .tokens
+                .iter()
+                .map(|token| (
+                    token.text.as_str(),
+                    token.strong.as_deref(),
+                    token.morph.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("ו", None, Some("conj")),
+                ("ב", None, Some("prep")),
+                ("ארץ", Some("776"), Some("n.fs")),
+            ]
+        );
+        assert_eq!(parsed.tokens[0].range.end, parsed.tokens[1].range.start);
+        assert_eq!(parsed.tokens[1].range.end, parsed.tokens[2].range.start);
+        assert!(
+            parsed
+                .tokens
+                .iter()
+                .all(|token| token.word_index_in_verse == 0)
+        );
+    }
+
+    #[test]
+    fn bhsek_joined_segments_do_not_shift_following_word_index() {
+        let parsed =
+            parse_verse("ה<S>9006</S><m>art</m>ארץ<S>776</S><m>n.fs</m> טוב<S>2896</S><m>a.ms</m>");
+
+        assert_eq!(parsed.tokens.len(), 3);
+        assert_eq!(parsed.tokens[0].word_index_in_verse, 0);
+        assert_eq!(parsed.tokens[1].word_index_in_verse, 0);
+        assert_eq!(parsed.tokens[2].word_index_in_verse, 1);
+    }
+
+    #[test]
+    fn bhsek_inline_annotations_stay_between_joined_segments() {
+        let parsed = parse_verse_full(
+            "ה<S>9006</S><m>art</m>ארץ<S>776</S><m>n.fs</m>",
+            true,
+            true,
+            false,
+        );
+
+        assert_eq!(parsed.clean_text, "ה⟨art⟩ארץ⟨776·n.fs⟩");
+        assert_eq!(&parsed.clean_text[parsed.tokens[0].range.clone()], "ה");
+        assert_eq!(&parsed.clean_text[parsed.tokens[1].range.clone()], "ארץ");
     }
 
     #[test]

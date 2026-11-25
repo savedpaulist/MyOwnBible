@@ -150,9 +150,39 @@ impl ShapedLine {
             align_width,
             &self.decoration_runs,
             &[],
+            None,
             window,
             cx,
             &mut paint_underline,
+        )
+    }
+
+    /// Paint the line while replacing every glyph colour.
+    ///
+    /// This is useful for repainting text through a selection mask after the
+    /// normal, syntax-coloured foreground has been drawn.
+    pub fn paint_with_color(
+        &self,
+        origin: Point<Pixels>,
+        line_height: Pixels,
+        align: TextAlign,
+        align_width: Option<Pixels>,
+        color: Hsla,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<()> {
+        paint_line(
+            origin,
+            &self.layout,
+            line_height,
+            align,
+            align_width,
+            &self.decoration_runs,
+            &[],
+            Some(color),
+            window,
+            cx,
+            &mut |_, _, _, _, _| {},
         )
     }
 
@@ -403,6 +433,7 @@ impl LineLayout {
             align_width,
             decoration_runs,
             &[],
+            None,
             window,
             cx,
             &mut |_, origin, width, style, window| window.paint_underline(origin, width, style),
@@ -479,12 +510,44 @@ impl WrappedLine {
             align_width,
             &self.decoration_runs,
             &self.wrap_boundaries,
+            None,
             window,
             cx,
             &mut |_, origin, width, style, window| window.paint_underline(origin, width, style),
         )?;
 
         Ok(())
+    }
+
+    /// Paint the wrapped line while replacing every glyph colour.
+    pub fn paint_with_color(
+        &self,
+        origin: Point<Pixels>,
+        line_height: Pixels,
+        align: TextAlign,
+        bounds: Option<Bounds<Pixels>>,
+        color: Hsla,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<()> {
+        let align_width = match bounds {
+            Some(bounds) => Some(bounds.size.width),
+            None => self.layout.wrap_width,
+        };
+
+        paint_line(
+            origin,
+            &self.layout.unwrapped_layout,
+            line_height,
+            align,
+            align_width,
+            &self.decoration_runs,
+            &self.wrap_boundaries,
+            Some(color),
+            window,
+            cx,
+            &mut |_, _, _, _, _| {},
+        )
     }
 
     /// Paint the background of line of text to the window.
@@ -526,6 +589,7 @@ fn paint_line(
     align_width: Option<Pixels>,
     decoration_runs: &[DecorationRun],
     wrap_boundaries: &[WrapBoundary],
+    color_override: Option<Hsla>,
     window: &mut Window,
     cx: &mut App,
     paint_underline: &mut dyn FnMut(
@@ -551,7 +615,7 @@ fn paint_line(
         let mut decoration_runs = decoration_runs.iter();
         let mut wraps = wrap_boundaries.iter().peekable();
         let mut run_end = 0;
-        let mut color = black();
+        let mut color = color_override.unwrap_or_else(black);
         let mut current_underline: Option<(Point<Pixels>, UnderlineStyle, Range<usize>)> = None;
         let mut current_strikethrough: Option<(Point<Pixels>, StrikethroughStyle)> = None;
         let text_system = cx.text_system().clone();
@@ -687,7 +751,7 @@ fn paint_line(
                         }
 
                         run_end += style_run.len as usize;
-                        color = style_run.color;
+                        color = color_override.unwrap_or(style_run.color);
                     } else {
                         run_end = layout.len;
                         finished_underline = current_underline.take();
@@ -1396,6 +1460,7 @@ mod tests {
                     Some(px(16.)),
                     &wrapped.decoration_runs,
                     &wrapped.wrap_boundaries,
+                    None,
                     window,
                     cx,
                     &mut |range, origin, width, style, window| {

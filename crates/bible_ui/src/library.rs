@@ -75,7 +75,7 @@ impl LibraryPanel {
                     .cursor_pointer()
                     .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
                     .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                    .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                     .child(label)
                     .on_click(cx.listener(move |_, _, _, cx| {
                         navigation::request_open_module(cx, module_id.clone());

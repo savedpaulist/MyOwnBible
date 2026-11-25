@@ -47,6 +47,13 @@ pub struct Settings {
     /// Хранится отдельно от выбранной темы, чтобы варианты можно было
     /// пересобрать и после перезапуска приложения.
     pub theme_generator_background: String,
+    /// User supplied family name for generated harmonies. Registered theme
+    /// names are prefixed with USER+ so they are easy to distinguish.
+    pub theme_generator_name: String,
+    /// User-authored semantic palette. Keys are gpui-component theme token
+    /// names and values are #RRGGBB colours. Unknown keys are preserved so a
+    /// newer build can add controls without destroying an older palette.
+    pub custom_theme_colors: std::collections::BTreeMap<String, String>,
     /// Левая менюшка свёрнута в узкую полосу иконок (этап 15).
     pub sidebar_collapsed: bool,
     /// Выбранный пункт левой менюшки (этап 15):
@@ -152,6 +159,8 @@ impl Default for Settings {
             preferred_strongs_dictionary: None,
             theme: default_theme(),
             theme_generator_background: "#272e33".to_string(),
+            theme_generator_name: "Моя тема".to_string(),
+            custom_theme_colors: Default::default(),
             sidebar_collapsed: false,
             sidebar_section: "dictionaries".to_string(),
             sidebar_visible: true,
@@ -602,6 +611,22 @@ mod tests {
         assert_eq!(restored.side_panel_font_family, "Atkinson Hyperlegible");
         assert_eq!(restored.side_panel_font_size, 15.0);
         assert_eq!(restored.interface_scale, 1.2);
+    }
+
+    #[test]
+    fn custom_theme_colors_round_trip_through_settings_json() {
+        let mut settings = Settings::default();
+        settings
+            .custom_theme_colors
+            .insert("list.hover.background".into(), "#123456".into());
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            restored.custom_theme_colors.get("list.hover.background"),
+            Some(&"#123456".to_string())
+        );
     }
 
     #[test]

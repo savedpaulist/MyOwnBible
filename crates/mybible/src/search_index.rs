@@ -27,7 +27,9 @@ use bible_domain::verse;
 use crate::db::ReadOnlyDb;
 
 /// Версия схемы индекса. Несовпадение — полный сброс (индекс восстановим).
-const SCHEMA_VERSION: i64 = 3;
+// v4: parser-aware rebuild after joined BHSEK+ segments stopped indexing
+// grammatical pseudo numbers H9001–H9009 as lexical Strong's entries.
+const SCHEMA_VERSION: i64 = 4;
 
 /// Граница Ветхого/Нового завета в нумерации MyBible — единый источник
 /// в домене (bible_domain::ids), здесь реэкспорт для удобства.
@@ -891,6 +893,20 @@ mod tests {
         let hits = index.search("G1325", None, None, 100).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].verse, 16);
+    }
+
+    #[test]
+    fn bhsek_index_uses_lexeme_strong_instead_of_grammatical_prefix() {
+        let clean = verse::parse_verse_full(
+            "ה<S>9006</S><m>art</m>שמים<S>8064</S><m>n.mp.a</m>",
+            false,
+            false,
+            false,
+        );
+        let text = index_text(&clean, None, 10);
+
+        assert!(text.contains("H8064"));
+        assert!(!text.contains("H9006"));
     }
 
     #[test]

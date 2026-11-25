@@ -463,7 +463,7 @@ impl SearchPanel {
             .rounded_md()
             .cursor_pointer()
             .when(category, |style| style.bg(cx.theme().secondary))
-            .hover(|style| style.bg(cx.theme().accent.opacity(0.10)))
+            .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
             .child(
                 Icon::new(if open {
                     IconName::ChevronDown
@@ -871,7 +871,7 @@ impl SearchPanel {
                     .rounded_md()
                     .when(action.is_some(), |row| {
                         row.cursor_pointer()
-                            .hover(|style| style.bg(cx.theme().accent.opacity(0.10)))
+                            .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                     })
                     .child(
                         div()

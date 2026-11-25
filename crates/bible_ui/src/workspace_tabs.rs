@@ -216,12 +216,16 @@ fn sized_tabs(
         .collect();
     let tabs = visible
         .into_iter()
-        .map(|(index, panel)| {
+        .enumerate()
+        .map(|(visible_index, (index, panel))| {
             let id = panel.panel_id(cx);
             let title = panel_title(panel, window, cx);
             Tab::new()
                 .child(title)
                 .selected(selected == Some(id))
+                .when(visible_index > 0, |tab| {
+                    tab.prefix(div().w(px(1.)).h_4().bg(cx.theme().border.opacity(0.85)))
+                })
                 .when(group.is_panel_closable(id, cx), |tab| {
                     let group = group.clone();
                     tab.on_mouse_down(MouseButton::Middle, move |_, window, cx| {
@@ -427,6 +431,15 @@ impl TabGroupRenderer for WorkspaceTabBar {
             TabSize::Large => ControlSize::Large,
         };
         let bar = sized_tabs(group, size, window, cx);
+        // Обычная вкладка GPUI-kit прозрачна и наследует фон TabBar.
+        // Выраженная примесь foreground отделяет неактивные вкладки от
+        // остального интерфейса на светлых и тёмных темах, не меняя
+        // отдельный цвет активной вкладки (`tab_active`).
+        let inactive_tab_background = cx
+            .theme()
+            .tokens
+            .tab_bar
+            .blend(cx.theme().foreground.opacity(0.16));
 
         let has_split = self
             .area
@@ -478,7 +491,7 @@ impl TabGroupRenderer for WorkspaceTabBar {
             .w_full()
             .min_w_0()
             .items_center()
-            .bg(cx.theme().tokens.tab_bar)
+            .bg(inactive_tab_background)
             .child(div().flex_1().min_w_0().child(bar))
             .child(
                 h_flex()

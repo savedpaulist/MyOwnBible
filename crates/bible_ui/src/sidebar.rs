@@ -39,8 +39,36 @@ enum Section {
 
 #[derive(Clone)]
 struct SidebarCommentaryRow {
+    book: BookNumber,
+    book_label: String,
     reference: VerseRef,
     label: String,
+}
+
+fn commentary_tree_items(
+    rows: &[SidebarCommentaryRow],
+    expanded_books: &HashSet<String>,
+) -> Vec<TreeItem> {
+    let mut books = BTreeMap::<BookNumber, (String, Vec<TreeItem>)>::new();
+    for (index, row) in rows.iter().enumerate() {
+        let (_, entries) = books
+            .entry(row.book)
+            .or_insert_with(|| (row.book_label.clone(), Vec::new()));
+        entries.push(TreeItem::new(
+            format!("commentary-entry:{index}"),
+            row.label.clone(),
+        ));
+    }
+
+    books
+        .into_iter()
+        .map(|(book, (label, entries))| {
+            let id = format!("commentary-book:{}", book.0);
+            TreeItem::new(id.clone(), label)
+                .children(entries)
+                .expanded(expanded_books.contains(&id))
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -210,7 +238,8 @@ pub struct SidebarView {
     new_tag_input: Entity<InputState>,
     commentary_module: Option<ModuleId>,
     commentary_rows: Arc<Vec<SidebarCommentaryRow>>,
-    commentary_list: ListState,
+    commentary_tree: Entity<TreeState>,
+    expanded_commentary_books: HashSet<String>,
     /// Очередь событий индекса заметок с потока watcher'а; поллинг 300 мс.
     pending_events: Arc<Mutex<Vec<IndexEvent>>>,
     subscribed_index: Option<NotesHandle>,
@@ -234,6 +263,7 @@ impl SidebarView {
         let chains = cx.new(|cx| crate::chains::ChainsPanel::new(window, cx));
         let questions = cx.new(|cx| crate::questions::QuestionsPanel::new(window, cx));
         let notes_tree = cx.new(|cx| TreeState::new(cx));
+        let commentary_tree = cx.new(|cx| TreeState::new(cx));
         let tag_color = cx.new(|cx| ColorPickerState::new(window, cx));
         let color_subscription =
             cx.subscribe(&tag_color, |this, _, event: &ColorPickerEvent, cx| {
@@ -264,6 +294,20 @@ impl SidebarView {
                         this.expanded_note_folders.insert(id);
                     } else {
                         this.expanded_note_folders.remove(&id);
+                    }
+                }
+                cx.notify();
+            }),
+            cx.subscribe(&commentary_tree, |this, _, event: &TreeEvent, cx| {
+                let (id, expanded) = match event {
+                    TreeEvent::Expanded(id) => (id.to_string(), true),
+                    TreeEvent::Collapsed(id) => (id.to_string(), false),
+                };
+                if id.starts_with("commentary-book:") {
+                    if expanded {
+                        this.expanded_commentary_books.insert(id);
+                    } else {
+                        this.expanded_commentary_books.remove(&id);
                     }
                 }
                 cx.notify();
@@ -400,7 +444,8 @@ impl SidebarView {
             new_tag_input,
             commentary_module: None,
             commentary_rows: Arc::new(Vec::new()),
-            commentary_list: ListState::new(0, ListAlignment::Top, px(32.)),
+            commentary_tree,
+            expanded_commentary_books: HashSet::new(),
             pending_events,
             subscribed_index: None,
             _index_token: None,
@@ -569,18 +614,20 @@ impl SidebarView {
                     .clone();
                 let label = if entry.chapter_to != entry.chapter_from {
                     format!(
-                        "{book} {}:{}–{}:{}",
+                        "{}:{}–{}:{}",
                         entry.chapter_from, entry.verse_from, entry.chapter_to, entry.verse_to
                     )
                 } else if entry.verse_to != entry.verse_from {
                     format!(
-                        "{book} {}:{}–{}",
+                        "{}:{}–{}",
                         entry.chapter_from, entry.verse_from, entry.verse_to
                     )
                 } else {
-                    format!("{book} {}:{}", entry.chapter_from, entry.verse_from)
+                    format!("{}:{}", entry.chapter_from, entry.verse_from)
                 };
                 SidebarCommentaryRow {
+                    book: entry.book,
+                    book_label: book,
                     reference: VerseRef {
                         book: entry.book,
                         chapter: entry.chapter_from,
@@ -594,7 +641,14 @@ impl SidebarView {
             })
             .collect::<Vec<_>>();
         let first_reference = rows.first().map(|row| row.reference);
-        self.commentary_list.reset(rows.len());
+        self.expanded_commentary_books.clear();
+        if let Some(first) = rows.first() {
+            self.expanded_commentary_books
+                .insert(format!("commentary-book:{}", first.book.0));
+        }
+        let tree_items = commentary_tree_items(&rows, &self.expanded_commentary_books);
+        self.commentary_tree
+            .update(cx, |tree, cx| tree.set_items(tree_items, cx));
         self.commentary_module = Some(module.clone());
         self.commentary_rows = Arc::new(rows);
         if let Some(reference) = first_reference {
@@ -606,7 +660,9 @@ impl SidebarView {
     fn close_commentary_module(&mut self, cx: &mut Context<Self>) {
         self.commentary_module = None;
         self.commentary_rows = Arc::new(Vec::new());
-        self.commentary_list.reset(0);
+        self.expanded_commentary_books.clear();
+        self.commentary_tree
+            .update(cx, |tree, cx| tree.set_items(Vec::new(), cx));
         cx.notify();
     }
 
@@ -743,15 +799,36 @@ impl SidebarView {
         navigation::notify_tags_changed(cx);
     }
 
-    fn delete_open_tag(&mut self, cx: &mut Context<Self>) {
+    fn confirm_delete_open_tag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tag) = &self.open_tag else {
             return;
         };
-        if let Err(error) = shell::tags::delete_tag(app_services(cx), tag.id) {
-            log::error!("delete tag failed: {error:#}");
-            return;
-        }
-        navigation::notify_tags_changed(cx);
+        let tag_id = tag.id;
+        let receiver = window.prompt(
+            PromptLevel::Critical,
+            crate::i18n::tr_static("Удалить тег?"),
+            Some(crate::i18n::tr_static("Эту операцию нельзя отменить")),
+            &[
+                crate::i18n::tr_static("Удалить"),
+                crate::i18n::tr_static("Отмена"),
+            ],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, window| {
+            if receiver.await != Ok(0) {
+                return;
+            }
+            let _ = this.update_in(window, |this, _, cx| {
+                if let Err(error) = shell::tags::delete_tag(app_services(cx), tag_id) {
+                    log::error!("delete tag failed: {error:#}");
+                    return;
+                }
+                this.open_tag = None;
+                navigation::notify_tags_changed(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Подпись книги для строки стиха тега: короткое имя из перевода
@@ -829,7 +906,7 @@ impl SidebarView {
                     .items_center()
                     .rounded_md()
                     .cursor_pointer()
-                    .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                    .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_tag_drilldown(tag_for_click.clone(), window, cx);
                     }))
@@ -922,7 +999,7 @@ impl SidebarView {
                         .rounded_md()
                         .bg(crate::ui_scale::row_background(index, cx))
                         .cursor_pointer()
-                        .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                        .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                         .child(label)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_commentary_module(module.clone(), cx);
@@ -939,31 +1016,71 @@ impl SidebarView {
             .unwrap_or_else(|| module.to_string());
         let rows = self.commentary_rows.clone();
         let module_for_rows = module.clone();
-        let results = list(self.commentary_list.clone(), move |index, _, cx| {
-            let Some(row) = rows.get(index).cloned() else {
-                return div().into_any_element();
-            };
-            let module = module_for_rows.clone();
-            v_flex()
-                .id(("sidebar-commentary-row", index))
+        let tree = Tree::new(&self.commentary_tree, move |index, entry, _, _, cx| {
+            let id = entry.item().id.to_string();
+            let label = entry.item().label.clone();
+            let depth = entry.depth();
+            let is_book = id.starts_with("commentary-book:");
+            let mut row = h_flex()
+                .id(("sidebar-commentary-tree-row", index))
                 .w_full()
+                .h(px(28.))
                 .min_w_0()
-                .px_2()
-                .py_1()
+                .pl(px(4. + depth as f32 * 16.))
+                .pr_1()
                 .gap_1()
+                .items_center()
                 .rounded_md()
                 .bg(crate::ui_scale::row_background(index, cx))
                 .cursor_pointer()
-                .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
+                .child(div().w(px(14.)).flex_shrink_0().children(is_book.then(|| {
+                    Icon::new(if entry.is_expanded() {
+                        gpui_kit::assets::IconName::ChevronDown
+                    } else {
+                        gpui_kit::assets::IconName::ChevronRight
+                    })
+                    .xsmall()
+                })))
+                .child(
+                    Icon::new(if is_book {
+                        gpui_kit::assets::IconName::BookOpen
+                    } else {
+                        gpui_kit::assets::IconName::FileText
+                    })
+                    .xsmall()
+                    .text_color(if is_book {
+                        cx.theme().accent
+                    } else {
+                        cx.theme().muted_foreground
+                    }),
+                )
                 .child(
                     div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(row.label.clone()),
-                )
-                .on_click(move |_, _, cx| {
-                    navigation::request_open_commentary(cx, module.clone(), row.reference);
-                })
-                .into_any_element()
+                        .min_w_0()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(px(crate::ui_scale::left_font_size(cx, 13.0)))
+                        .font_weight(if is_book {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .child(label),
+                );
+            if let Some(row_index) = id
+                .strip_prefix("commentary-entry:")
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                if let Some(reference) = rows.get(row_index).map(|row| row.reference) {
+                    let module = module_for_rows.clone();
+                    row = row.on_click(move |_, _, cx| {
+                        navigation::request_open_commentary(cx, module.clone(), reference);
+                    });
+                }
+            }
+            ListItem::new(("sidebar-commentary-tree-item", index)).child(row)
         });
         v_flex()
             .size_full()
@@ -995,13 +1112,7 @@ impl SidebarView {
                             .child(module_title),
                     ),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(results)
-                    .vertical_scrollbar(&self.commentary_list),
-            )
+            .child(div().flex_1().min_h_0().child(tree))
             .into_any_element()
     }
 
@@ -1050,7 +1161,7 @@ impl SidebarView {
                     .cursor_pointer()
                     .text_size(px(crate::ui_scale::left_font_size(cx, 14.0)))
                     .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                    .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                     .child(label)
                     .on_click(cx.listener(move |_, _, _, cx| {
                         // Теги модуль-независимы: открываем место в модуле,
@@ -1089,7 +1200,7 @@ impl SidebarView {
                             .p_1()
                             .rounded_md()
                             .cursor_pointer()
-                            .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                            .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                             .child(
                                 Icon::new(gpui_kit::assets::IconName::ArrowLeft)
                                     .xsmall()
@@ -1122,8 +1233,8 @@ impl SidebarView {
                                     .xsmall()
                                     .text_color(cx.theme().danger),
                             )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.delete_open_tag(cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.confirm_delete_open_tag(window, cx);
                             })),
                     ),
             )
@@ -1274,6 +1385,39 @@ impl SidebarView {
                     ),
                 );
             }
+            menu = menu.separator();
+            let note_to_delete = relpath.clone();
+            menu = menu.item(
+                PopupMenuItem::new(crate::i18n::tr_static("Удалить заметку…")).on_click(
+                    move |_, window, cx| {
+                        let receiver = window.prompt(
+                            PromptLevel::Critical,
+                            crate::i18n::tr_static("Удалить заметку?"),
+                            Some(crate::i18n::tr_static("Эту операцию нельзя отменить")),
+                            &[
+                                crate::i18n::tr_static("Удалить"),
+                                crate::i18n::tr_static("Отмена"),
+                            ],
+                            cx,
+                        );
+                        let relpath = note_to_delete.clone();
+                        cx.spawn(async move |cx| {
+                            if receiver.await != Ok(0) {
+                                return;
+                            }
+                            cx.update(|cx| {
+                                let Some(notes) = shell::notes::current(app_services(cx)) else {
+                                    return;
+                                };
+                                if let Err(error) = shell::notes::delete_note(&notes, &relpath) {
+                                    log::error!("delete note: {error:#}");
+                                }
+                            });
+                        })
+                        .detach();
+                    },
+                ),
+            );
             menu
         });
         let templates = Self::notes_index(cx)

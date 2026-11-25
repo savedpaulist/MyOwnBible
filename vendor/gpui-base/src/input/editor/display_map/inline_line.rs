@@ -1,5 +1,5 @@
 //! A visual row whose offsets remain in source UTF-8 bytes.
-use gpui::{App, Pixels, Point, ShapedLine, SharedString, TextAlign, Window, point, px};
+use gpui::{App, Hsla, Pixels, Point, ShapedLine, SharedString, TextAlign, Window, point, px};
 use std::ops::Range;
 
 pub(crate) struct InlineFragment {
@@ -110,6 +110,44 @@ impl InputLine {
         cx: &mut App,
     ) {
         self.paint_pass(pos, height, align, width, true, window, cx);
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_color(
+        &self,
+        pos: Point<Pixels>,
+        height: Pixels,
+        align: TextAlign,
+        width: Option<Pixels>,
+        color: Hsla,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        match &self.content {
+            Content::Text(line) => {
+                let _ = line.paint_with_color(pos, height, align, width, color, window, cx);
+            }
+            Content::Inline(fragments) => {
+                let remaining = (width.unwrap_or(self.width) - self.width).max(px(0.));
+                let offset = match align {
+                    TextAlign::Right => remaining,
+                    TextAlign::Center => remaining / 2.,
+                    _ => px(0.),
+                };
+                for fragment in fragments {
+                    if let Some(line) = &fragment.text {
+                        let _ = line.paint_with_color(
+                            pos + point(offset + fragment.x, px(0.)),
+                            height,
+                            TextAlign::Left,
+                            None,
+                            color,
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            }
+        }
     }
     #[allow(clippy::too_many_arguments)]
     fn paint_pass(

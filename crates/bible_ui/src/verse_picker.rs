@@ -471,7 +471,7 @@ impl VersePicker {
                             crate::ui_scale::row_background(index, cx)
                         })
                         .cursor_pointer()
-                        .hover(|style| style.bg(cx.theme().accent.opacity(0.15)))
+                        .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                         .children(new_chapter.then(|| {
                             div()
                                 .font_weight(FontWeight::SEMIBOLD)

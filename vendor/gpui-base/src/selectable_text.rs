@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use gpui::{
-    App, BorderStyle, Bounds, Corners, Edges, Element, ElementId, GlobalElementId, HighlightStyle,
-    Hitbox, HitboxBehavior, Hsla, InspectorElementId, LayoutId, PaintQuad, Pixels, Point,
+    App, BorderStyle, Bounds, ContentMask, Corners, Edges, Element, ElementId, GlobalElementId,
+    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, LayoutId, PaintQuad, Pixels, Point,
     SharedString, StyledText, Subscription, TextStyleRefinement, Window, transparent_black,
 };
 
@@ -265,7 +265,21 @@ impl Element for SelectableText {
         let color = self
             .selection_color
             .unwrap_or_else(|| crate::Theme::global(cx).tokens.colors.selection);
+        let (color, selected_text_color) = crate::high_contrast_selection(color);
+        let mut selection_masks = Vec::new();
         for range in projection.ranges().iter().flatten().cloned() {
+            let (Some(start), Some(end)) = (
+                layout.position_for_index(range.start),
+                layout.position_for_index(range.end),
+            ) else {
+                continue;
+            };
+            selection_masks.extend(selection_quad_bounds(
+                start,
+                end,
+                layout.bounds(),
+                layout.line_height(),
+            ));
             Self::paint_selection(&layout, range, color, self.flow_selection, window);
         }
         self.styled_text.paint(
@@ -277,6 +291,11 @@ impl Element for SelectableText {
             window,
             cx,
         );
+        for bounds in selection_masks {
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                _ = layout.paint_foreground_with_color(selected_text_color, window, cx);
+            });
+        }
     }
 }
 

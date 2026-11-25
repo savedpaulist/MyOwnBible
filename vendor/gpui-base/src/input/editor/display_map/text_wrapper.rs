@@ -1324,6 +1324,30 @@ impl LineLayout {
             }
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_color(
+        &self,
+        pos: Point<Pixels>,
+        line_height: Pixels,
+        text_align: TextAlign,
+        align_width: Option<Pixels>,
+        color: gpui::Hsla,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        for (ix, line) in self.wrapped_lines.iter().enumerate() {
+            line.paint_with_color(
+                pos + point(self.line_indent(ix), ix * line_height),
+                line_height,
+                text_align,
+                align_width,
+                color,
+                window,
+                cx,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

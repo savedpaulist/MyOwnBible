@@ -52,6 +52,18 @@ use crate::text::strip_markup;
 /// Граница Ветхого/Нового завета в нумерации MyBible (как в форке).
 const OLD_TESTAMENT_BOUNDARY: i64 = 470;
 
+/// Направление строки чтения определяется языком всего модуля, а не
+/// отдельными символами стиха. Поэтому еврейская цитата внутри LXX не
+/// переставляет номер, а BHSEK+ с legacy-кодом `iw` переставляет.
+fn module_language_is_hebrew(language: Option<&str>) -> bool {
+    let Some(language) = language else {
+        return false;
+    };
+    let language = language.trim().to_ascii_lowercase();
+    let primary = language.split(['-', '_']).next().unwrap_or_default();
+    matches!(primary, "he" | "iw" | "heb" | "hbo" | "hebrew")
+}
+
 fn bible_copy_text(
     cx: &App,
     text: &str,
@@ -1190,6 +1202,7 @@ impl ReaderPanel {
         reading_size: f32,
         reading_line_spacing: f32,
         reading_column_width: f32,
+        module_is_hebrew: bool,
         word_preview_target: Option<&WeakEntity<Self>>,
         annotations: &Rc<shell::BookAnnotations>,
         chain_marks: &Rc<HashMap<u16, HashSet<u16>>>,
@@ -1337,16 +1350,15 @@ impl ReaderPanel {
                             .text_color(cx.theme().accent),
                     );
                 }
-                row.child(
-                    div()
-                        .w(px(34.))
-                        .flex_shrink_0()
-                        .text_right()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(verse.to_string()),
-                )
-                .child(if reading_column_width > 0.0 {
+                let verse_number = div()
+                    .w(px(34.))
+                    .flex_shrink_0()
+                    .when(module_is_hebrew, |number| number.text_left())
+                    .when(!module_is_hebrew, |number| number.text_right())
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(verse.to_string());
+                let text_cell: AnyElement = if reading_column_width > 0.0 {
                     div()
                         .flex_1()
                         .min_w_0()
@@ -1356,9 +1368,21 @@ impl ReaderPanel {
                         .into_any_element()
                 } else {
                     text_cell.into_any_element()
-                })
-                .child(markers)
-                .into_any_element()
+                };
+
+                if module_is_hebrew {
+                    // Зеркальная раскладка для RTL-модуля: служебные маркеры
+                    // слева, текст в центре, номер стиха у правого края.
+                    row.child(markers)
+                        .child(text_cell)
+                        .child(verse_number)
+                        .into_any_element()
+                } else {
+                    row.child(verse_number)
+                        .child(text_cell)
+                        .child(markers)
+                        .into_any_element()
+                }
             }
         }
     }
@@ -2107,7 +2131,7 @@ impl ReaderPanel {
         let place = control("open-navigator")
             .gap_1()
             .cursor_pointer()
-            .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+            .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
             .child(
                 div()
                     .flex_1()
@@ -2294,7 +2318,7 @@ impl ReaderPanel {
                     .cursor_pointer()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                    .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                     .child("✕")
                     .on_click(cx.listener(|this, _, _, cx| this.close_tag_picker(cx))),
             );
@@ -2417,7 +2441,7 @@ impl ReaderPanel {
                     .justify_between()
                     .rounded_md()
                     .cursor_pointer()
-                    .hover(|style| style.bg(cx.theme().accent.opacity(0.10)))
+                    .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.chain_picker_save(chain_id.clone(), cx);
                     }))
@@ -2459,7 +2483,7 @@ impl ReaderPanel {
                     .cursor_pointer()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                    .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                     .child("✕")
                     .on_click(cx.listener(|this, _, _, cx| this.close_chain_picker(cx))),
             );
@@ -2578,7 +2602,7 @@ impl ReaderPanel {
                         .cursor_pointer()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                        .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                         .child(crate::i18n::tr_static("← Назад"))
                         .on_click(cx.listener(|this, _, _, cx| this.navigator_back(cx))),
                 )
@@ -2601,7 +2625,7 @@ impl ReaderPanel {
                     .cursor_pointer()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .hover(|style| style.bg(cx.theme().accent.opacity(0.12)))
+                    .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                     .child("✕")
                     .on_click(cx.listener(|this, _, _, cx| this.close_navigator(cx))),
             )
@@ -2875,6 +2899,10 @@ impl Render for ReaderPanel {
         } else {
             let rows = self.rows.clone();
             let module = self.module.clone();
+            let module_is_hebrew = module
+                .as_ref()
+                .and_then(|module| app_services(cx).registry.module(module))
+                .is_some_and(|meta| module_language_is_hebrew(meta.language.as_deref()));
             let book = self.book;
             let book_title = self.book_title.clone();
             let book_short = self.book_short.clone();
@@ -2918,6 +2946,7 @@ impl Render for ReaderPanel {
                     reading_size,
                     reading_line_spacing,
                     reading_column_width,
+                    module_is_hebrew,
                     reader.as_ref(),
                     &annotations,
                     &chain_marks,
@@ -2979,5 +3008,21 @@ impl Render for ReaderPanel {
                     .is_some()
                     .then(|| self.render_chain_picker(cx)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::module_language_is_hebrew;
+
+    #[test]
+    fn hebrew_layout_follows_module_language_metadata() {
+        for language in ["iw", "he", "he-IL", "heb", "hbo", "Hebrew"] {
+            assert!(module_language_is_hebrew(Some(language)), "{language}");
+        }
+        for language in ["el", "grc", "ru", "en", "mixed"] {
+            assert!(!module_language_is_hebrew(Some(language)), "{language}");
+        }
+        assert!(!module_language_is_hebrew(None));
     }
 }

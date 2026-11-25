@@ -285,7 +285,7 @@ impl Render for DictionaryBrowser {
                         .rounded_md()
                         .bg(crate::ui_scale::row_background(index, cx))
                         .cursor_pointer()
-                        .hover(|style| style.bg(cx.theme().accent.opacity(0.15)))
+                        .hover(|style| style.bg(crate::ui_scale::hover_background(cx)))
                         .child(crate::text::strip_markup(label))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_module(Some(id.clone()), window, cx);
@@ -308,7 +308,7 @@ impl Render for DictionaryBrowser {
             let show_module = self.module.is_none();
             let rows = list(self.list.clone(), move |index, _, cx| {
                 let topic = results[index].clone();
-                let accent = cx.theme().accent.opacity(0.15);
+                let accent = crate::ui_scale::hover_background(cx);
                 let mut row = v_flex()
                     .id(("dictionary-topic", index))
                     .px_2()

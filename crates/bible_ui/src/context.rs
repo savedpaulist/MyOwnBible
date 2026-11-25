@@ -356,6 +356,12 @@ impl ContextPanel {
         let description = &description;
 
         let mut sections = v_flex().w_full().min_w_0().p_2().gap_3();
+        let divider = || {
+            div()
+                .w_full()
+                .h(px(1.0))
+                .bg(cx.theme().border.opacity(0.65))
+        };
 
         // Заголовок (перенос форка: «лексема транслитерация [чтение] — G25»):
         // лексема из колонки словаря, иначе слово как в тексте.
@@ -375,7 +381,7 @@ impl ContextPanel {
                     .text_size(px(crate::ui_scale::panel_font_size(cx, 16.0)))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(cx.theme().foreground)
-                    .child(headline),
+                    .child(SelectableText::new("word-headline", headline)),
             );
         if let Some(transliteration) = &description.transliteration {
             head = head.child(
@@ -383,7 +389,10 @@ impl ContextPanel {
                     .italic()
                     .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
                     .text_color(cx.theme().muted_foreground)
-                    .child(transliteration.clone()),
+                    .child(SelectableText::new(
+                        "word-transliteration",
+                        transliteration.clone(),
+                    )),
             );
         }
         if let Some(pronunciation) = &description.pronunciation {
@@ -391,31 +400,28 @@ impl ContextPanel {
                 div()
                     .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!("[{pronunciation}]")),
+                    .child(SelectableText::new(
+                        "word-pronunciation",
+                        format!("[{pronunciation}]"),
+                    )),
             );
         }
         if let Some(strong) = &description.strong {
             head = head.child(
                 div()
+                    .px_1()
+                    .py(px(1.0))
+                    .rounded_sm()
+                    .bg(cx.theme().accent.opacity(0.18))
+                    .border_1()
+                    .border_color(cx.theme().accent.opacity(0.55))
                     .text_size(px(crate::ui_scale::panel_font_size(cx, 12.0)))
-                    .text_color(cx.theme().accent)
-                    .child(strong.clone()),
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground)
+                    .child(SelectableText::new("word-strong-number", strong.clone())),
             );
         }
-        sections = sections.child(
-            v_flex().w_full().gap_1().child(head).child(
-                div()
-                    .text_size(px(crate::ui_scale::panel_font_size(cx, 12.0)))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!(
-                        "{} {}:{} · {}",
-                        description.book_title,
-                        description.chapter,
-                        description.verse,
-                        description.module,
-                    )),
-            ),
-        );
+        sections = sections.child(head);
 
         // Меню оформления вынесено над заголовком секции «Слово».
 
@@ -426,13 +432,14 @@ impl ContextPanel {
             .clone()
             .filter(|short| !short.is_empty())
         {
-            sections = sections.child(
+            sections = sections.child(divider()).child(
                 div()
                     .w_full()
                     .min_w_0()
-                    .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
-                    .text_color(cx.theme().foreground)
-                    .child(short),
+                    .text_size(px(crate::ui_scale::panel_font_size(cx, 16.0)))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(cx.theme().success)
+                    .child(SelectableText::new("word-short-definition", short)),
             );
         }
 
@@ -442,16 +449,16 @@ impl ContextPanel {
                 .morph_gloss
                 .clone()
                 .unwrap_or_else(|| crate::i18n::text(cx, "Расшифровка недоступна."));
-            sections = sections.child(
+            sections = sections.child(divider()).child(
                 v_flex()
                     .w_full()
                     .min_w_0()
                     .gap_1()
                     .child(
                         div()
-                            .text_size(px(crate::ui_scale::panel_font_size(cx, 12.0)))
+                            .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().muted_foreground)
+                            .text_color(cx.theme().accent)
                             .child(crate::i18n::tr(cx, "Морфология")),
                     )
                     .child(
@@ -459,7 +466,7 @@ impl ContextPanel {
                             .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(cx.theme().foreground)
-                            .child(code.clone()),
+                            .child(SelectableText::new("word-morph-code", code.clone())),
                     )
                     .child(
                         div()
@@ -479,7 +486,7 @@ impl ContextPanel {
             let body: AnyElement = match (&description.strong_entry, &description.strongs_dict) {
                 (Some(entry), Some(dict)) => {
                     let blocks = shell::article::parse_module_html(entry, dict);
-                    let html = article::blocks_to_html(&blocks);
+                    let html = article::blocks_to_word_panel_html(&blocks);
                     article::linked_text_view(
                         TextView::html(
                             ElementId::Name(format!("word-strong-{strong}").into()),
@@ -502,7 +509,7 @@ impl ContextPanel {
                 .as_ref()
                 .and_then(|id| app_services(cx).registry.module(id))
                 .map(|meta| meta.description.unwrap_or_else(|| meta.id.to_string()));
-            sections = sections.child(
+            sections = sections.child(divider()).child(
                 v_flex()
                     .w_full()
                     .min_w_0()
@@ -531,7 +538,7 @@ impl ContextPanel {
         }
 
         if description.strong.is_none() && description.morph_code.is_none() {
-            sections = sections.child(
+            sections = sections.child(divider()).child(
                 div()
                     .text_size(px(crate::ui_scale::panel_font_size(cx, 14.0)))
                     .text_color(cx.theme().muted_foreground)
@@ -597,11 +604,11 @@ impl ContextPanel {
                     crate::usage::open_word_usage(usage_description.clone(), cx);
                 }),
         );
-        sections = sections.child(actions);
+        sections = sections.child(divider()).child(actions);
 
         // Закрепление Strong's-словаря (перенос strong picker форка):
         // «Авто» — первый словарь приоритета, где нашлась статья.
-        sections = sections.child(
+        sections = sections.child(divider()).child(
             h_flex()
                 .w_full()
                 .gap_2()
@@ -641,7 +648,6 @@ impl ContextPanel {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let border = cx.theme().border;
-        let accent = cx.theme().accent;
         let mut list = v_flex().w_full().min_w_0();
         for entry in &context.translations {
             let module = entry.module.clone();
@@ -666,7 +672,7 @@ impl ContextPanel {
                     .cursor_pointer()
                     .border_b_1()
                     .border_color(border)
-                    .hover(|style| style.bg(accent.opacity(0.08)))
+                    .hover(|style| style.bg(cx.theme().list_hover))
                     .child(
                         Icon::new(IconName::ChevronDown)
                             .xsmall()
@@ -811,7 +817,6 @@ impl ContextPanel {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let border = cx.theme().border;
-        let accent = cx.theme().accent;
         let mut list = v_flex().w_full().min_w_0();
         for (index, entry) in context.commentary.iter().enumerate() {
             let key = format!("{}#{index}", entry.module);
@@ -834,7 +839,7 @@ impl ContextPanel {
                     .cursor_pointer()
                     .border_b_1()
                     .border_color(border)
-                    .hover(|style| style.bg(accent.opacity(0.08)))
+                    .hover(|style| style.bg(cx.theme().list_hover))
                     .child(
                         Icon::new(IconName::ChevronDown)
                             .xsmall()
@@ -1083,7 +1088,6 @@ impl ContextPanel {
         let open = self.open_section == Some(index);
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
-        let accent = cx.theme().accent;
         let weak = weak.clone();
         h_flex()
             .id(ElementId::Name(format!("context-trigger-{index}").into()))
@@ -1096,8 +1100,8 @@ impl ContextPanel {
             .cursor_pointer()
             .border_b_1()
             .border_color(border)
-            .when(open, |this| this.bg(accent.opacity(0.10)))
-            .hover(|style| style.bg(accent.opacity(0.06)))
+            .when(open, |this| this.bg(cx.theme().list_active))
+            .hover(|style| style.bg(cx.theme().list_hover))
             .child(
                 Icon::new(IconName::ChevronDown)
                     .xsmall()

@@ -27,12 +27,29 @@ const SCHEME: &str = "bibleown://";
 
 /// Сериализация дерева содержимого в HTML-подмножество TextView.
 pub fn blocks_to_html(blocks: &[ContentBlock]) -> String {
+    blocks_to_html_with_lead_word(blocks, false)
+}
+
+/// Сериализация статьи для компактной панели «Слово».
+///
+/// В узкой колонке границы абзацев плохо различимы, особенно когда модуль
+/// почти не использует вертикальные отступы. Первое слово каждого абзаца
+/// выделяется полужирным без добавления посторонних символов в текст.
+pub fn blocks_to_word_panel_html(blocks: &[ContentBlock]) -> String {
+    blocks_to_html_with_lead_word(blocks, true)
+}
+
+fn blocks_to_html_with_lead_word(blocks: &[ContentBlock], highlight_lead_word: bool) -> String {
     let mut out = String::new();
     for block in blocks {
         match block {
             ContentBlock::Paragraph(inlines) => {
                 out.push_str("<p>");
-                inlines_to_html(inlines, &mut out);
+                if highlight_lead_word {
+                    paragraph_inlines_to_html(inlines, &mut out);
+                } else {
+                    inlines_to_html(inlines, &mut out);
+                }
                 out.push_str("</p>");
             }
             ContentBlock::Heading { level, content } => {
@@ -81,6 +98,65 @@ pub fn blocks_to_html(blocks: &[ContentBlock]) -> String {
         }
     }
     out
+}
+
+fn paragraph_inlines_to_html(inlines: &[ContentInline], out: &mut String) {
+    let mut lead_word_pending = true;
+    for inline in inlines {
+        match inline {
+            ContentInline::Text { text, marks } if lead_word_pending => {
+                let word_start = text.find(|ch: char| !ch.is_whitespace());
+                let Some(word_start) = word_start else {
+                    inlines_to_html(std::slice::from_ref(inline), out);
+                    continue;
+                };
+                let word_end = text[word_start..]
+                    .find(char::is_whitespace)
+                    .map(|offset| word_start + offset)
+                    .unwrap_or(text.len());
+
+                let open = marks_open(marks);
+                let close = marks_close(marks);
+                out.push_str(&open);
+                escape_html_into(&text[..word_start], out);
+                out.push_str("<b>");
+                escape_html_into(&text[word_start..word_end], out);
+                out.push_str("</b>");
+                escape_html_into(&text[word_end..], out);
+                out.push_str(&close);
+                lead_word_pending = false;
+            }
+            ContentInline::Link { target, label } if lead_word_pending => {
+                if let Some(url) = link_target_to_url(target) {
+                    out.push_str(&format!(r#"<a href="{url}"><b>"#));
+                    escape_html_into(label, out);
+                    out.push_str("</b></a>");
+                } else {
+                    out.push_str("<b>");
+                    escape_html_into(label, out);
+                    out.push_str("</b>");
+                }
+                lead_word_pending = false;
+            }
+            ContentInline::StrongRef(number) if lead_word_pending => {
+                let topic = number.topic();
+                out.push_str(&format!(
+                    r#"<a href="{SCHEME}strongs/{}"><b>"#,
+                    percent_encode(&topic)
+                ));
+                escape_html_into(&topic, out);
+                out.push_str("</b></a>");
+                lead_word_pending = false;
+            }
+            ContentInline::Break => {
+                out.push_str("<br>");
+            }
+            _ => {
+                inlines_to_html(std::slice::from_ref(inline), out);
+                lead_word_pending = false;
+            }
+        }
+    }
 }
 
 fn inlines_to_html(inlines: &[ContentInline], out: &mut String) {
@@ -356,6 +432,39 @@ mod tests {
             },
         ])]);
         assert_eq!(html, "<p>обычный <b>жирный</b></p>");
+    }
+
+    #[test]
+    fn word_panel_highlights_first_word_of_each_paragraph() {
+        let blocks = vec![
+            ContentBlock::Paragraph(vec![ContentInline::Text {
+                text: "первый".to_string(),
+                marks: TextMarks::default(),
+            }]),
+            ContentBlock::Paragraph(vec![ContentInline::Text {
+                text: "второй".to_string(),
+                marks: TextMarks::default(),
+            }]),
+        ];
+
+        assert_eq!(
+            blocks_to_word_panel_html(&blocks),
+            "<p><b>первый</b></p><p><b>второй</b></p>"
+        );
+    }
+
+    #[test]
+    fn word_panel_preserves_whitespace_and_marks_around_first_word() {
+        let html =
+            blocks_to_word_panel_html(&[ContentBlock::Paragraph(vec![ContentInline::Text {
+                text: "  первое остальное".to_string(),
+                marks: TextMarks {
+                    italic: true,
+                    ..Default::default()
+                },
+            }])]);
+
+        assert_eq!(html, "<p><i>  <b>первое</b> остальное</i></p>");
     }
 
     #[test]

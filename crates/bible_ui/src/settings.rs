@@ -6,9 +6,11 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState, ColorSelect};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::setting::{
@@ -31,6 +33,7 @@ enum FontPreviewTarget {
 }
 
 static LAST_SETTINGS_SAVE_STATUS: StdMutex<Option<String>> = StdMutex::new(None);
+static SETTINGS_WINDOW_OPENING: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn set_save_status(message: String) {
     if let Ok(mut status) = LAST_SETTINGS_SAVE_STATUS.lock() {
@@ -49,7 +52,9 @@ pub struct SettingsPanel {
     focus_handle: FocusHandle,
     modules_dir_input: Entity<InputState>,
     notes_dir_input: Entity<InputState>,
-    theme_background_input: Entity<InputState>,
+    theme_name_input: Entity<InputState>,
+    theme_background_picker: Entity<ColorPickerState>,
+    custom_theme_pickers: Vec<(&'static str, Entity<ColorPickerState>)>,
     status: Option<String>,
     pages: Option<Vec<SettingPage>>,
     system_fonts: Option<Vec<String>>,
@@ -108,6 +113,13 @@ pub fn open_settings_window(cx: &mut App) {
         return;
     }
 
+    // Two click/key events can arrive before the deferred open runs. Treat
+    // that short interval as an existing window as well, otherwise both
+    // callbacks create their own Settings window.
+    if SETTINGS_WINDOW_OPENING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
     cx.defer(|cx| {
         let mut window_size = size(px(980.0), px(720.0));
         if let Some(display) = cx.primary_display() {
@@ -121,9 +133,11 @@ pub fn open_settings_window(cx: &mut App) {
             window_min_size: Some(size(px(720.0), px(480.0))),
             ..TitleBar::window_options()
         };
-        if let Err(error) = gpui_kit::open_window(options, cx, |window, cx| {
+        let result = gpui_kit::open_window(options, cx, |window, cx| {
             cx.new(|cx| SettingsWindow::new(window, cx))
-        }) {
+        });
+        SETTINGS_WINDOW_OPENING.store(false, Ordering::Release);
+        if let Err(error) = result {
             log::error!("failed to open settings window: {error:#}");
         }
     });
@@ -149,11 +163,33 @@ impl SettingsPanel {
                         .unwrap_or_default(),
                 )
         });
-        let theme_background_input = cx.new(|cx| {
+        let generated_background =
+            crate::annotations::parse_hex(&settings.theme_generator_background)
+                .unwrap_or_else(|| hsla(0.43, 0.12, 0.18, 1.0));
+        let theme_name_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("#272E33")
-                .default_value(settings.theme_generator_background.clone())
+                .placeholder("Моя тема")
+                .default_value(settings.theme_generator_name.clone())
         });
+        let theme_background_picker =
+            cx.new(|cx| ColorPickerState::new(window, cx).default_value(generated_background));
+        let custom_theme_pickers = crate::theme::CUSTOM_THEME_FIELDS
+            .iter()
+            .map(|&(key, fallback)| {
+                let value = settings
+                    .custom_theme_colors
+                    .get(key)
+                    .map(String::as_str)
+                    .unwrap_or(fallback);
+                let color = crate::annotations::parse_hex(value)
+                    .or_else(|| crate::annotations::parse_hex(fallback))
+                    .unwrap_or_else(|| hsla(0., 0., 0., 1.));
+                (
+                    key,
+                    cx.new(|cx| ColorPickerState::new(window, cx).default_value(color)),
+                )
+            })
+            .collect::<Vec<_>>();
         let settings_bus = navigation::bus(cx);
         let settings_subscription = cx.subscribe(
             &settings_bus,
@@ -163,53 +199,271 @@ impl SettingsPanel {
             },
         );
 
+        let mut subscriptions = vec![settings_subscription];
+        for (_, picker) in &custom_theme_pickers {
+            subscriptions.push(cx.subscribe(picker, |this, _, _: &ColorPickerEvent, cx| {
+                // The preview alongside the picker is rendered by the
+                // settings row, so refresh its cached descriptor too.
+                this.pages = None;
+                cx.notify();
+            }));
+        }
+
         Self {
             focus_handle: cx.focus_handle(),
             modules_dir_input,
             notes_dir_input,
-            theme_background_input,
+            theme_name_input,
+            theme_background_picker,
+            custom_theme_pickers,
             status: None,
             pages: None,
             system_fonts: None,
-            _subscriptions: vec![settings_subscription],
+            _subscriptions: subscriptions,
         }
     }
 
-    fn generated_theme_item(panel: &WeakEntity<Self>, input: &Entity<InputState>) -> SettingItem {
+    fn generated_theme_item(
+        panel: &WeakEntity<Self>,
+        name_input: &Entity<InputState>,
+        picker: &Entity<ColorPickerState>,
+    ) -> SettingItem {
         let panel = panel.clone();
-        let input = input.clone();
+        let name_input = name_input.clone();
+        let picker = picker.clone();
         SettingItem::render(move |_options, _window, cx| {
             let panel = panel.clone();
-            let input = input.clone();
-            h_flex()
+            let name_input = name_input.clone();
+            let picker = picker.clone();
+            v_flex()
                 .w_full()
                 .gap_2()
-                .items_center()
-                .child(div().flex_1().min_w_0().child(Input::new(&input)))
                 .child(
-                    Button::new("generate-colour-harmonies")
-                        .xsmall()
-                        .label(crate::i18n::tr(cx, "Собрать 5 вариантов"))
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .w(px(120.))
+                                .flex_shrink_0()
+                                .text_sm()
+                                .child(crate::i18n::tr(cx, "Название")),
+                        )
+                        .child(div().flex_1().min_w_0().child(Input::new(&name_input))),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .w(px(120.))
+                                .flex_shrink_0()
+                                .text_sm()
+                                .child(crate::i18n::tr(cx, "Базовый цвет")),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(ColorSelect::new(&picker).small().w_full()),
+                        )
+                        .child(
+                            Button::new("generate-colour-harmonies")
+                                .xsmall()
+                                .label(crate::i18n::tr(cx, "Создать тему"))
+                                .on_click(move |_, _, cx| {
+                                    let value = picker
+                                        .read(cx)
+                                        .value()
+                                        .map(crate::annotations::to_hex)
+                                        .unwrap_or_else(|| "#272E33".to_string());
+                                    let name = name_input.read(cx).value().trim().to_string();
+                                    let result = crate::theme::generate_from_background(
+                                        &value, &name, cx,
+                                    );
+                                    let _ = panel.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(names) => {
+                                                this.status = Some(format!(
+                                                    "Создано {} вариантов USER+{}. Выберите нужный в списке тем.",
+                                                    names.len(),
+                                                    if name.is_empty() { "Моя тема" } else { &name }
+                                                ));
+                                                navigation::notify_settings_changed(cx);
+                                            }
+                                            Err(error) => {
+                                                this.status = Some(format!(
+                                                    "Не удалось собрать тему: {error}"
+                                                ));
+                                            }
+                                        }
+                                        cx.notify();
+                                    });
+                                }),
+                        ),
+                )
+        })
+    }
+
+    fn custom_token_example(key: &str, english: bool) -> &'static str {
+        let ru = if key == "background" {
+            "Фон окна"
+        } else if key == "foreground" {
+            "Обычный текст"
+        } else if key.contains("hover") {
+            "Наведение указателя"
+        } else if key.contains("active") {
+            "Выбранный элемент"
+        } else if key.starts_with("sidebar") {
+            "Левая панель"
+        } else if key.starts_with("tab") {
+            "Вкладки"
+        } else if key.starts_with("title_bar") {
+            "Заголовок окна"
+        } else if key.starts_with("status_bar") {
+            "Строка состояния"
+        } else if key.starts_with("scrollbar") {
+            "Полоса прокрутки"
+        } else if key.starts_with("list") {
+            "Строка списка"
+        } else if key.starts_with("table") {
+            "Таблица"
+        } else if key.starts_with("danger") {
+            "Удаление / ошибка"
+        } else if key.starts_with("warning") {
+            "Предупреждение"
+        } else if key.starts_with("info") {
+            "Информация"
+        } else if key.starts_with("success") {
+            "Успешное действие"
+        } else if key.starts_with("link") {
+            "Ссылка"
+        } else if key.starts_with("primary") {
+            "Основная кнопка"
+        } else if key.starts_with("secondary") {
+            "Вторичная кнопка"
+        } else if key.starts_with("popover") {
+            "Всплывающее меню"
+        } else if key.starts_with("muted") {
+            "Приглушённый элемент"
+        } else if key.starts_with("input") {
+            "Поле ввода"
+        } else if key.starts_with("selection") {
+            "Выделение текста"
+        } else if key.starts_with("base") {
+            "Смысловой цвет"
+        } else {
+            "Элемент интерфейса"
+        };
+        if english {
+            match ru {
+                "Фон окна" => "Window background",
+                "Обычный текст" => "Normal text",
+                "Наведение указателя" => "Pointer hover",
+                "Выбранный элемент" => "Selected item",
+                "Левая панель" => "Left panel",
+                "Вкладки" => "Tabs",
+                "Заголовок окна" => "Window title bar",
+                "Строка состояния" => "Status bar",
+                "Полоса прокрутки" => "Scrollbar",
+                "Строка списка" => "List row",
+                "Таблица" => "Table",
+                "Удаление / ошибка" => "Delete / error",
+                "Предупреждение" => "Warning",
+                "Информация" => "Information",
+                "Успешное действие" => "Success",
+                "Ссылка" => "Link",
+                "Основная кнопка" => "Primary button",
+                "Вторичная кнопка" => "Secondary button",
+                "Всплывающее меню" => "Popup menu",
+                "Приглушённый элемент" => "Muted element",
+                "Поле ввода" => "Input field",
+                "Выделение текста" => "Text selection",
+                "Смысловой цвет" => "Semantic color",
+                _ => "Interface element",
+            }
+        } else {
+            ru
+        }
+    }
+
+    fn custom_theme_item(
+        panel: &WeakEntity<Self>,
+        pickers: &[(&'static str, Entity<ColorPickerState>)],
+    ) -> SettingItem {
+        let panel = panel.clone();
+        let pickers = pickers.to_vec();
+        SettingItem::render(move |_options, _window, cx| {
+            let mut column = v_flex().w_full().gap_2();
+            for (key, picker) in &pickers {
+                let key = *key;
+                let color = picker.read(cx).value().unwrap_or(cx.theme().accent);
+                let example = Self::custom_token_example(key, crate::i18n::is_english(cx));
+                column = column.child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .w(px(210.))
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(key),
+                        )
+                        .child(
+                            div()
+                                .w(px(180.))
+                                .flex_shrink_0()
+                                .child(ColorSelect::new(picker).xsmall().w_full()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(color)
+                                .child(example),
+                        ),
+                );
+            }
+            let apply_pickers = pickers.clone();
+            let apply_panel = panel.clone();
+            column.child(
+                h_flex().w_full().pt_2().justify_end().child(
+                    Button::new("apply-custom-theme")
+                        .label(crate::i18n::tr(cx, "Собрать и применить мою тему"))
                         .on_click(move |_, _, cx| {
-                            let value = input.read(cx).value().to_string();
-                            let result = crate::theme::generate_from_background(&value, cx);
-                            let _ = panel.update(cx, |this, cx| {
-                                match result {
-                                    Ok(names) => {
-                                        this.status = Some(format!(
-                                            "Создано {} гармоний. Выберите одну из «Палитра …» в списке тем.",
-                                            names.len()
-                                        ));
-                                        navigation::notify_settings_changed(cx);
+                            let colors = apply_pickers
+                                .iter()
+                                .filter_map(|(key, picker)| {
+                                    picker.read(cx).value().map(|color| {
+                                        ((*key).to_string(), crate::annotations::to_hex(color))
+                                    })
+                                })
+                                .collect();
+                            let result = crate::theme::save_custom_theme(colors, cx);
+                            let _ = apply_panel.update(cx, |this, cx| {
+                                this.status = Some(match result {
+                                    Ok(()) => {
+                                        "Пользовательская тема сохранена и применена.".to_string()
                                     }
-                                    Err(error) => {
-                                        this.status = Some(format!("Не удалось собрать палитры: {error}"));
-                                    }
-                                }
+                                    Err(error) => format!("Не удалось сохранить тему: {error}"),
+                                });
+                                this.pages = None;
+                                navigation::notify_settings_changed(cx);
                                 cx.notify();
                             });
                         }),
-                )
+                ),
+            )
         })
     }
 
@@ -869,8 +1123,12 @@ impl SettingsPanel {
                                 shell::themes::storage_dir().display()
                             )
                         }),
-                        Self::generated_theme_item(&panel, &self.theme_background_input)
-                            .description(crate::i18n::tr(cx, "Введите базовый фон (#RGB или #RRGGBB). Модель построит пять спокойных вариантов по цветовому кругу: аналоговый, комплементарный, раздельно-комплементарный, триадный и тетрадный. Поверхности выводятся из фона, акценты ограничены по насыщенности и проверяются на читаемость.")),
+                        Self::generated_theme_item(
+                            &panel,
+                            &self.theme_name_input,
+                            &self.theme_background_picker,
+                        )
+                            .description(crate::i18n::tr(cx, "Введите имя и выберите базовый цвет. Приложение создаст пять гармонических вариантов с именами USER+Имя.")),
                         SettingItem::new(
                             crate::i18n::tr(cx, "Масштаб интерфейса"),
                             SettingField::dropdown(
@@ -982,6 +1240,14 @@ impl SettingsPanel {
                         )
                         .description(crate::i18n::tr(cx, "Регулирует вертикальное расстояние между строками стихов.")),
                     ]),
+                ]),
+                SettingPage::new(crate::i18n::tr(cx, "Редактор своей темы")).groups([
+                    SettingGroup::new()
+                        .title(crate::i18n::tr(cx, "Все цвета темы"))
+                        .items([
+                            Self::custom_theme_item(&panel, &self.custom_theme_pickers)
+                                .description(crate::i18n::tr(cx, "Каждый используемый приложением цвет настраивается отдельно. Название токена показано слева, color picker — в центре, пример назначения — справа. После настройки нажмите кнопку внизу списка.")),
+                        ]),
                 ]),
                 SettingPage::new(crate::i18n::tr(cx, "Шрифты")).groups([
                     SettingGroup::new().title(crate::i18n::tr(cx, "Системные шрифты")).items([

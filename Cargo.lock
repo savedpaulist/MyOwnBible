@@ -640,6 +640,7 @@ version = "0.1.0"
 dependencies = [
  "bible_ui",
  "embed-resource",
+ "gpui-pre-platform",
  "shell",
 ]
 

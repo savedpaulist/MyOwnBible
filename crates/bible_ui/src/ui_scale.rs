@@ -44,11 +44,17 @@ pub(crate) fn row_background(index: usize, cx: &App) -> Hsla {
     if index % 2 == 0 {
         transparent_black()
     } else {
-        // The previous 45% stripe blended into both Everforest variants and
-        // was hard to distinguish in peripheral vision. Keep the theme color,
-        // but make alternating rows visibly different in light and dark modes.
-        cx.theme().muted.opacity(0.78)
+        // Use the dedicated stripe token rather than a muted surface. The
+        // theme adapter deliberately keeps this distinct from both hover and
+        // active selection, including for imported Zed themes.
+        cx.theme().list_even
     }
+}
+
+/// Shared, deliberately high-contrast pointer state for hand-built rows.
+pub(crate) fn hover_background(cx: &App) -> Hsla {
+    use gpui_kit::component::ActiveTheme as _;
+    cx.theme().list_hover
 }
 
 pub(crate) fn icon_size(cx: &App) -> Pixels {

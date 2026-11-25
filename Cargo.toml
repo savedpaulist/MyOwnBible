@@ -85,6 +85,13 @@ license.workspace = true
 bible_ui.workspace = true
 shell.workspace = true
 
+# GPUI 0.3.12 precompiles its Metal library with a macOS 12 deployment
+# target. Compile the same shader source at application startup on macOS so
+# BibleOWN can run on Big Sur (11) as well. GPUI already falls back from newer
+# display-link APIs on pre-14 systems.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui-pre-platform = { version = "=0.3.12", features = ["runtime_shaders"] }
+
 [build-dependencies]
 embed-resource = "3.0"
 
@@ -100,3 +107,9 @@ icon = [
 ]
 category = "Education"
 short_description = "Bible study, notes, and synchronization"
+# cargo-bundle <= 0.11 spelling. Keep it alongside the current nested form so
+# both packaging workflows emit LSMinimumSystemVersion=11.0.
+osx_minimum_system_version = "11.0"
+
+[package.metadata.bundle.osx]
+minimum_system_version = "11.0"

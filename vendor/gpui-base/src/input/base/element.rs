@@ -1188,6 +1188,25 @@ impl<M: InputModeKind> TextElement<M> {
         (!corners.is_empty()).then_some(corners)
     }
 
+    fn layout_range_masks(
+        range: &Range<usize>,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+    ) -> Vec<Bounds<Pixels>> {
+        let origin = bounds.origin + point(last_layout.line_number_width, px(0.));
+        Self::layout_range_corners(range, last_layout)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|corners| {
+                let left = corners.top_left.x.min(corners.bottom_left.x);
+                let right = corners.top_right.x.max(corners.bottom_right.x);
+                let top = corners.top_left.y.min(corners.top_right.y);
+                let bottom = corners.bottom_left.y.max(corners.bottom_right.y);
+                Bounds::from_corners(origin + point(left, top), origin + point(right, bottom))
+            })
+            .collect()
+    }
+
     fn layout_range_decorations(
         &self,
         last_layout: &LastLayout,
@@ -1328,14 +1347,15 @@ impl<M: InputModeKind> TextElement<M> {
         bounds: &mut Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
-    ) -> Vec<Path<Pixels>> {
+    ) -> (Vec<Path<Pixels>>, Vec<Bounds<Pixels>>) {
         let state = self.state.read(cx);
         if !state.has_selection_focus(window, cx) {
-            return vec![];
+            return (vec![], vec![]);
         }
 
         let active_id = state.active_selection().id;
         let mut paths = Vec::new();
+        let mut masks = Vec::new();
 
         for selection in state.selections.iter() {
             let is_active = selection.id == active_id;
@@ -1383,25 +1403,21 @@ impl<M: InputModeKind> TextElement<M> {
                     .take_while(|s| s.range().start < range.end)
                 {
                     if start < span.range().start {
-                        paths.extend(Self::layout_match_range(
-                            start..span.range().start,
-                            last_layout,
-                            bounds,
-                        ));
+                        let part = start..span.range().start;
+                        masks.extend(Self::layout_range_masks(&part, last_layout, bounds));
+                        paths.extend(Self::layout_match_range(part, last_layout, bounds));
                     }
                     start = span.range().end.max(start);
                 }
             }
             if start < range.end {
-                paths.extend(Self::layout_match_range(
-                    start..range.end,
-                    last_layout,
-                    bounds,
-                ));
+                let part = start..range.end;
+                masks.extend(Self::layout_range_masks(&part, last_layout, bounds));
+                paths.extend(Self::layout_match_range(part, last_layout, bounds));
             }
         }
 
-        paths
+        (paths, masks)
     }
 
     /// Calculate the visible range of lines in the viewport.
@@ -2943,6 +2959,7 @@ pub(super) struct PrepaintState {
     /// row index (zero based), no wrap, same line as the cursor.
     current_row: Option<usize>,
     selection_paths: Vec<Path<Pixels>>,
+    selection_text_masks: Vec<Bounds<Pixels>>,
     hover_highlight_path: Option<Path<Pixels>>,
     search_match_paths: Vec<(Path<Pixels>, bool)>,
     document_color_paths: Vec<(Path<Pixels>, Hsla)>,
@@ -3604,7 +3621,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
         });
 
         let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
-        let selection_paths = self.layout_selections(&last_layout, &mut bounds, window, cx);
+        let (selection_paths, selection_text_masks) =
+            self.layout_selections(&last_layout, &mut bounds, window, cx);
         let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
         let document_color_paths =
             self.layout_document_colors(&document_colors, &last_layout, &bounds, cx);
@@ -3802,6 +3820,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             cursor_scroll_offset,
             current_row,
             selection_paths,
+            selection_text_masks,
             search_match_paths,
             hover_highlight_path,
             hover_definition_hitbox,
@@ -3965,7 +3984,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
         }
 
         // Paint selections
-        if window.is_window_active() {
+        let selection_palette = window
+            .is_window_active()
+            .then(|| crate::high_contrast_selection(editor_style.selection));
+        if let Some((selection_background, _)) = selection_palette {
             let secondary_selection = Hsla {
                 s: 0.1,
                 ..editor_style.selection
@@ -3979,7 +4001,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             }
 
             for path in prepaint.selection_paths.drain(..) {
-                window.paint_path(path, editor_style.selection);
+                window.paint_path(path, selection_background);
             }
 
             // Paint hover highlight
@@ -4057,6 +4079,46 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         cx,
                     );
                     offset_y += line_height;
+                }
+            }
+        }
+
+        if let Some((_, selected_text_color)) = selection_palette {
+            let selection_text_masks = std::mem::take(&mut prepaint.selection_text_masks);
+            let mut repaint_y = invisible_top_padding;
+            for (line, &buffer_line) in prepaint
+                .last_layout
+                .lines
+                .iter()
+                .zip(prepaint.last_layout.visible_buffer_lines.iter())
+            {
+                let p = point(
+                    origin.x + prepaint.last_layout.line_number_width + scroll_offset,
+                    origin.y + repaint_y,
+                );
+                let line_bounds = Bounds::new(
+                    p,
+                    size(prepaint.last_layout.content_width, line.size(line_height).height),
+                );
+                for &mask in selection_text_masks
+                    .iter()
+                    .filter(|mask| mask.intersects(&line_bounds))
+                {
+                    window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
+                        line.paint_with_color(
+                            p,
+                            line_height,
+                            text_align,
+                            Some(prepaint.last_layout.content_width),
+                            selected_text_color,
+                            window,
+                            cx,
+                        );
+                    });
+                }
+                repaint_y += line.size(line_height).height;
+                if has_ghost_lines && Some(buffer_line) == prepaint.current_row {
+                    repaint_y += prepaint.ghost_lines_height;
                 }
             }
         }
@@ -5107,7 +5169,9 @@ mod tests {
                 let state = editor.read(cx);
                 let layout = state.last_layout.clone().unwrap();
                 let mut bounds = state.input_bounds;
-                TextElement::new(editor.clone()).layout_selections(&layout, &mut bounds, window, cx)
+                TextElement::new(editor.clone())
+                    .layout_selections(&layout, &mut bounds, window, cx)
+                    .0
             };
             let focused_paths = selection_paths(window, cx).len();
             assert!(focused_paths > 0);

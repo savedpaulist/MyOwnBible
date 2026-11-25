@@ -17,6 +17,80 @@ include!(concat!(env!("OUT_DIR"), "/embedded_zed_themes.rs"));
 
 /// Theme applied when a saved theme has disappeared or cannot be loaded.
 pub const DEFAULT_THEME: &str = "Everforest Dark Hard";
+pub const CUSTOM_THEME_NAME: &str = "Моя тема";
+
+/// Every independently configurable token used by BibleOWN's generated
+/// palettes. Component-specific foregrounds and interaction states remain
+/// separate on purpose, so the editor never silently changes a second colour.
+pub const CUSTOM_THEME_FIELDS: &[(&str, &str)] = &[
+    ("background", "#272E33"),
+    ("foreground", "#D3C6AA"),
+    ("caret", "#D3C6AA"),
+    ("border", "#4F5B58"),
+    ("ring", "#A7C080"),
+    ("muted.background", "#323C41"),
+    ("muted.foreground", "#9DA9A0"),
+    ("popover.background", "#323C41"),
+    ("popover.foreground", "#D3C6AA"),
+    ("accent.background", "#40584B"),
+    ("accent.foreground", "#F2F4EE"),
+    ("primary.background", "#A7C080"),
+    ("primary.foreground", "#1E2326"),
+    ("primary.hover.background", "#B8CF94"),
+    ("primary.active.background", "#C7D9A8"),
+    ("secondary.background", "#374247"),
+    ("secondary.foreground", "#D3C6AA"),
+    ("secondary.hover.background", "#4B6154"),
+    ("secondary.active.background", "#566D60"),
+    ("danger.background", "#E67E80"),
+    ("danger.foreground", "#1E2326"),
+    ("warning.background", "#DBBC7F"),
+    ("warning.foreground", "#1E2326"),
+    ("info.background", "#7FBBB3"),
+    ("info.foreground", "#1E2326"),
+    ("success.background", "#A7C080"),
+    ("success.foreground", "#1E2326"),
+    ("link", "#83C092"),
+    ("link.hover", "#A7D4B1"),
+    ("selection.background", "#4B6557"),
+    ("sidebar.background", "#2E383C"),
+    ("sidebar.foreground", "#D3C6AA"),
+    ("sidebar.border", "#4F5B58"),
+    ("sidebar.accent.background", "#4B6557"),
+    ("sidebar.accent.foreground", "#F2F4EE"),
+    ("tab.background", "#2E383C"),
+    ("tab.foreground", "#9DA9A0"),
+    ("tab.active.background", "#272E33"),
+    ("tab.active.foreground", "#D3C6AA"),
+    ("tab_bar.background", "#323C41"),
+    ("title_bar.background", "#374247"),
+    ("title_bar.border", "#4F5B58"),
+    ("status_bar.background", "#374247"),
+    ("status_bar.border", "#4F5B58"),
+    ("scrollbar.thumb.background", "#596763"),
+    ("scrollbar.thumb.hover.background", "#83A598"),
+    ("input.border", "#596763"),
+    ("list.background", "#2E383C"),
+    ("list.even.background", "#3A464A"),
+    ("list.hover.background", "#506C5B"),
+    ("list.active.background", "#665F46"),
+    ("list.active.border", "#DBBC7F"),
+    ("list.highlight.foreground", "#A7C080"),
+    ("table.background", "#272E33"),
+    ("table.head.background", "#374247"),
+    ("table.head.foreground", "#D3C6AA"),
+    ("table.even.background", "#323C41"),
+    ("table.hover.background", "#506C5B"),
+    ("table.active.background", "#665F46"),
+    ("table.active.border", "#DBBC7F"),
+    ("table.row.border", "#4F5B58"),
+    ("base.red", "#E67E80"),
+    ("base.yellow", "#DBBC7F"),
+    ("base.green", "#A7C080"),
+    ("base.cyan", "#83C092"),
+    ("base.blue", "#7FBBB3"),
+    ("base.magenta", "#D699B6"),
+];
 
 /// Register built-in and locally installed Zed themes, then restore the saved
 /// selection. The import is intentionally offline: it reads local JSON files.
@@ -27,17 +101,73 @@ pub fn init(cx: &mut App) {
     }
 
     load_zed_themes(cx);
-    let generated_background = app_services(cx)
-        .settings
-        .read()
-        .theme_generator_background
-        .clone();
-    if let Err(error) = register_generated_themes(&generated_background, cx) {
+    let (generated_background, generated_name) = {
+        let settings = app_services(cx).settings.read();
+        (
+            settings.theme_generator_background.clone(),
+            settings.theme_generator_name.clone(),
+        )
+    };
+    if let Err(error) = register_generated_themes(&generated_background, &generated_name, cx) {
         log::warn!("cannot restore generated palettes: {error}");
+    }
+    let custom = app_services(cx).settings.read().custom_theme_colors.clone();
+    if let Err(error) = register_custom_theme(&custom, cx) {
+        log::warn!("cannot restore custom theme: {error}");
     }
 
     let saved = app_services(cx).settings.read().theme.clone();
     apply(&saved, cx);
+}
+
+/// Register (or replace) the user's exact semantic palette.
+pub fn register_custom_theme(
+    overrides: &std::collections::BTreeMap<String, String>,
+    cx: &mut App,
+) -> Result<(), String> {
+    let mut colors = serde_json::Map::new();
+    for &(key, fallback) in CUSTOM_THEME_FIELDS {
+        let color = overrides.get(key).map(String::as_str).unwrap_or(fallback);
+        colors.insert(key.into(), Value::String(normalise_hex(color)?));
+    }
+    let background = overrides
+        .get("background")
+        .map(String::as_str)
+        .unwrap_or("#272E33");
+    let mode = if rgb_to_hsl(rgb_from_hex(background)?).l < 0.5 {
+        "dark"
+    } else {
+        "light"
+    };
+    let set = json!({
+        "name": "Пользовательская тема BibleOWN",
+        "author": "Пользователь BibleOWN",
+        "themes": [{
+            "name": CUSTOM_THEME_NAME,
+            "mode": mode,
+            "is_default": false,
+            "shadow": false,
+            "colors": colors
+        }]
+    });
+    ThemeRegistry::global_mut(cx)
+        .load_themes_from_str(&serde_json::to_string(&set).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+/// Persist, register and immediately select the palette assembled in Settings.
+pub fn save_custom_theme(
+    colors: std::collections::BTreeMap<String, String>,
+    cx: &mut App,
+) -> Result<(), String> {
+    register_custom_theme(&colors, cx)?;
+    shell::settings::update(app_services(cx), |settings| {
+        settings.custom_theme_colors = colors;
+        settings.theme = CUSTOM_THEME_NAME.to_string();
+    })
+    .map_err(|error| error.to_string())?;
+    apply(CUSTOM_THEME_NAME, cx);
+    Ok(())
 }
 
 /// Registers five colour-wheel harmonies for a user supplied canvas colour.
@@ -46,18 +176,29 @@ pub fn init(cx: &mut App) {
 /// scheme rotates the accent around the wheel while surfaces remain derived
 /// from the exact supplied background. This is deliberately deterministic:
 /// the same #RRGGBB always reconstructs the same accessible themes.
-pub fn generate_from_background(background: &str, cx: &mut App) -> Result<Vec<String>, String> {
-    let names = register_generated_themes(background, cx)?;
+pub fn generate_from_background(
+    background: &str,
+    user_name: &str,
+    cx: &mut App,
+) -> Result<Vec<String>, String> {
+    let user_name = normalise_user_theme_name(user_name);
+    let names = register_generated_themes(background, &user_name, cx)?;
     let background = normalise_hex(background)?;
     shell::settings::update(app_services(cx), |settings| {
         settings.theme_generator_background = background;
+        settings.theme_generator_name = user_name;
     })
     .map_err(|error| error.to_string())?;
     Ok(names)
 }
 
-fn register_generated_themes(background: &str, cx: &mut App) -> Result<Vec<String>, String> {
+fn register_generated_themes(
+    background: &str,
+    user_name: &str,
+    cx: &mut App,
+) -> Result<Vec<String>, String> {
     let background = rgb_from_hex(background)?;
+    let user_name = normalise_user_theme_name(user_name);
     let base = rgb_to_hsl(background);
     // A neutral background has no reliable hue, so start from an editorial
     // blue-green rather than pretending grey has a colour direction.
@@ -71,9 +212,6 @@ fn register_generated_themes(background: &str, cx: &mut App) -> Result<Vec<Strin
     ];
     let mut themes = Vec::with_capacity(schemes.len());
     let mut names = Vec::with_capacity(schemes.len());
-    let tag = rgb_hex(background)
-        .trim_start_matches('#')
-        .to_ascii_uppercase();
     for (label, rotations) in schemes {
         // The first wheel point is primary; extra points feed semantic roles
         // so triadic/tetradic variants use the whole harmony rather than only
@@ -88,7 +226,7 @@ fn register_generated_themes(background: &str, cx: &mut App) -> Result<Vec<Strin
                 })
             })
             .collect();
-        let name = format!("Палитра {label} · #{tag}");
+        let name = format!("USER+{user_name} · {label}");
         let accent = accents[0];
         let info = *accents.get(1).unwrap_or(&rotate_hue(accent, 0.12));
         let warning = rotate_hue(accent, 0.10);
@@ -176,12 +314,34 @@ fn register_generated_themes(background: &str, cx: &mut App) -> Result<Vec<Strin
         themes.push(json!({"name": name, "mode": if is_dark { "dark" } else { "light" }, "is_default": false, "shadow": false, "colors": colors}));
         names.push(name);
     }
-    let set =
-        json!({"name": "Генератор гармоний BibleOWN", "author": "BibleOWN", "themes": themes});
+    let set = json!({
+        "name": format!("USER+{user_name}"),
+        "author": "BibleOWN User",
+        "themes": themes
+    });
     ThemeRegistry::global_mut(cx)
         .load_themes_from_str(&serde_json::to_string(&set).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     Ok(names)
+}
+
+fn normalise_user_theme_name(input: &str) -> String {
+    let trimmed = input.trim();
+    let without_prefix = trimmed
+        .strip_prefix("USER+")
+        .or_else(|| trimmed.strip_prefix("user+"))
+        .unwrap_or(trimmed)
+        .trim();
+    let cleaned = without_prefix
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(48)
+        .collect::<String>();
+    if cleaned.is_empty() {
+        "Моя тема".to_string()
+    } else {
+        cleaned
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -296,6 +456,7 @@ pub fn apply(name: &str, cx: &mut App) {
         .cloned();
     match config {
         Some(config) => {
+            let preserve_custom_interactions = config.name.as_ref() == CUSTOM_THEME_NAME;
             // Release the settings read-lock before mutating GPUI's app context.
             let (ui_font_family, ui_font_size) = {
                 let settings = app_services(cx).settings.read();
@@ -318,6 +479,22 @@ pub fn apply(name: &str, cx: &mut App) {
                 theme.scrollbar = theme.background.opacity(0.0);
                 theme.scrollbar_thumb = theme.foreground.opacity(0.22);
                 theme.scrollbar_thumb_hover = theme.accent.opacity(0.62);
+                if !preserve_custom_interactions {
+                    // Imported themes often use interaction colours that are
+                    // only a few percent away from their background. BibleOWN
+                    // has dense module/note lists, so hover, selection and row
+                    // striping need to remain recognisable in peripheral vision.
+                    theme.list_even = theme.foreground.opacity(0.14);
+                    theme.list_hover = theme.accent.opacity(0.40);
+                    theme.list_active = theme.warning.opacity(0.30);
+                    theme.list_active_border = theme.warning.opacity(0.90);
+                    theme.table_even = theme.foreground.opacity(0.12);
+                    theme.table_hover = theme.accent.opacity(0.40);
+                    theme.table_active = theme.warning.opacity(0.30);
+                    theme.sidebar_accent = theme.accent.opacity(0.36);
+                    theme.secondary_hover = theme.accent.opacity(0.32);
+                    theme.selection = theme.accent.opacity(0.38);
+                }
                 if !ui_font_family.is_empty() {
                     theme.font_family = ui_font_family.into();
                 }
@@ -706,8 +883,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        DEFAULT_THEME, EMBEDDED_ZED_THEMES, EVERFOREST_JSON, convert_zed_theme_family, hsl_to_rgb,
-        normalise_hex, parse_zed_json, rgb_from_hex, rgb_hex, rgb_to_hsl, rotate_hue, wrap_hue,
+        CUSTOM_THEME_FIELDS, DEFAULT_THEME, EMBEDDED_ZED_THEMES, EVERFOREST_JSON,
+        convert_zed_theme_family, hsl_to_rgb, normalise_hex, normalise_user_theme_name,
+        parse_zed_json, rgb_from_hex, rgb_hex, rgb_to_hsl, rotate_hue, wrap_hue,
     };
 
     #[test]
@@ -790,5 +968,26 @@ mod tests {
         assert_eq!(normalise_hex("#abc").unwrap(), "#AABBCC");
         assert_eq!(normalise_hex("272e33").unwrap(), "#272E33");
         assert!(normalise_hex("not-a-colour").is_err());
+    }
+
+    #[test]
+    fn custom_theme_editor_has_unique_valid_tokens() {
+        let mut keys = std::collections::HashSet::new();
+        for &(key, color) in CUSTOM_THEME_FIELDS {
+            assert!(keys.insert(key), "duplicate custom theme token: {key}");
+            assert_eq!(normalise_hex(color).unwrap(), color);
+        }
+        assert!(keys.contains("background"));
+        assert!(keys.contains("list.even.background"));
+        assert!(keys.contains("list.hover.background"));
+        assert!(keys.contains("list.active.background"));
+        assert!(keys.contains("scrollbar.thumb.hover.background"));
+    }
+
+    #[test]
+    fn generated_theme_names_have_one_user_prefix() {
+        assert_eq!(normalise_user_theme_name("  Study  "), "Study");
+        assert_eq!(normalise_user_theme_name("USER+Study"), "Study");
+        assert_eq!(normalise_user_theme_name("  "), "Моя тема");
     }
 }

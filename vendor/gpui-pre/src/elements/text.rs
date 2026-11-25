@@ -814,6 +814,41 @@ impl TextLayout {
         self.paint_lines(TextPaintPass::Foreground, window, cx)
     }
 
+    /// Repaints the glyph foreground with one colour while preserving layout.
+    /// Callers normally combine this with a content mask to recolour only a
+    /// selected range.
+    pub fn paint_foreground_with_color(
+        &self,
+        color: crate::Hsla,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> anyhow::Result<()> {
+        let element_state = self.0.borrow();
+        let element_state = element_state
+            .as_ref()
+            .context("measurement has not been performed")?;
+        let bounds = element_state
+            .bounds
+            .context("prepaint has not been performed")?;
+        let line_height = element_state.line_height;
+        let mut line_origin = bounds.origin;
+        let text_style = window.text_style();
+        for line in &element_state.lines {
+            line.paint_with_color(
+                line_origin,
+                line_height,
+                text_style.text_align,
+                Some(bounds),
+                color,
+                window,
+                cx,
+            )
+            .log_err();
+            line_origin.y += line.size(line_height).height;
+        }
+        Ok(())
+    }
+
     fn paint_lines(
         &self,
         pass: TextPaintPass,

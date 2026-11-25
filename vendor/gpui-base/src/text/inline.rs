@@ -19,7 +19,7 @@ use std::{
 };
 
 use gpui::{
-    AnyTooltip, App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId,
+    AnyTooltip, App, BorderStyle, Bounds, ClickEvent, ContentMask, CursorStyle, Edges, Element, ElementId,
     ForegroundExecutor, Global, GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior,
     Hsla, InspectorElementId, LayoutId, MouseButton, MouseClickEvent, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, StyleRefinement, StyledText, Task,
@@ -1391,19 +1391,26 @@ impl Element for Inline {
             }
         }
 
+        let mut selection_repaint = None;
         if let Some(selection) = state.selection {
             let color = GlobalState::global(cx)
                 .text_view_state()
                 .map(|state| state.read(cx).text_view_style.selection())
                 .unwrap_or_else(|| crate::Theme::global(cx).tokens.colors.selection);
+            let (color, selected_text_color) = crate::high_contrast_selection(color);
+            let mut masks = Vec::new();
             selection_paint::visit(
                 &text_layout,
                 window.text_style().text_align,
                 selection.start.min(selection.end)..selection.start.max(selection.end),
                 window.content_mask().bounds,
                 &mut state.selection_rows,
-                |rect| window.paint_quad(gpui::fill(rect, color)),
+                |rect| {
+                    masks.push(rect);
+                    window.paint_quad(gpui::fill(rect, color));
+                },
             );
+            selection_repaint = Some((selected_text_color, masks));
             if let Some((start, end)) = Self::selection_edges(&selection, &text_layout)
                 && let Some(text_view_state) = GlobalState::global(cx).text_view_state()
             {
@@ -1417,6 +1424,13 @@ impl Element for Inline {
         }
 
         _ = text_layout.paint_foreground(window, cx);
+        if let Some((selected_text_color, masks)) = selection_repaint {
+            for bounds in masks {
+                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                    _ = text_layout.paint_foreground_with_color(selected_text_color, window, cx);
+                });
+            }
+        }
 
         if is_selectable {
             if let Some(text_view_state) = GlobalState::global(cx).text_view_state() {
