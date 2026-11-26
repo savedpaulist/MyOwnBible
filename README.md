@@ -122,8 +122,14 @@ sh scripts/build-macos.sh --bundle --release
 ```
 
 Последняя команда создаёт обычное приложение
-`target/release/bundle/osx/BibleOWN.app`. Его нужно открывать через Finder —
+`target/release/bundle/osx/BibleOWN-Catalina.app`. Его нужно открывать через Finder —
 окно Terminal при этом не появляется.
+
+Не запускайте для этого проекта `cargo bundle --release`: сторонний упаковщик
+может снова записать в пакет минимальную версию из своего шаблона. Сценарий
+перед упаковкой проверяет `LC_BUILD_VERSION` самого Mach-O-файла и после
+упаковки проверяет `LSMinimumSystemVersion` в `Info.plist`. При значении выше
+10.15 сборка завершается ошибкой и не выдаёт заведомо несовместимый `.app`.
 
 Чтобы на Mac с процессором M1/M2/M3/M4 собрать приложение для старого Intel
 Mac с Catalina, используйте отдельный режим:
@@ -134,7 +140,7 @@ sh scripts/build-macos.sh --bundle --intel-catalina --release
 
 Он установит Rust-цель `x86_64-apple-darwin`, соберёт именно Intel-бинарник и
 создаст пакет в
-`target/x86_64-apple-darwin/release/bundle/osx/BibleOWN.app`. Обычная сборка,
+`target/x86_64-apple-darwin/release/bundle/osx/BibleOWN-Catalina.app`. Обычная сборка,
 созданная на M1 без `--intel-catalina`, является ARM64-приложением и на Intel
 Mac не запустится независимо от указанной минимальной версии macOS.
 Рядом автоматически создаётся ZIP-архив; для переноса на другой Mac лучше
@@ -143,7 +149,7 @@ Mac не запустится независимо от указанной ми�
 Бэкенд GPUI в проекте использует совместимый с Catalina API типов файлов и не
 линкует отсутствующий там `UniformTypeIdentifiers.framework`.
 
-Готовый пакет находится в `target/release/bundle/osx/BibleOWN.app`. Именно
+Готовый пакет находится в `target/release/bundle/osx/BibleOWN-Catalina.app`. Именно
 пакет `.app` получает `resources/branding/macos/mob.icns` и отображает иконку
 в Finder и Dock. Обычный `cargo build --release` также собирает исполняемый
 файл, но не создаёт полноценный macOS-пакет приложения.
@@ -152,8 +158,8 @@ Mac не запустится независимо от указанной ми�
 
 ```sh
 /usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
-  target/release/bundle/osx/BibleOWN.app/Contents/Info.plist
-otool -l target/release/bundle/osx/BibleOWN.app/Contents/MacOS/bibleown \
+  target/release/bundle/osx/BibleOWN-Catalina.app/Contents/Info.plist
+otool -l target/release/bundle/osx/BibleOWN-Catalina.app/Contents/MacOS/bibleown \
   | grep -A5 LC_BUILD_VERSION
 ```
 

@@ -32,6 +32,14 @@ if [ "$major" -lt 10 ] || { [ "$major" -eq 10 ] && [ "$minor" -lt 15 ]; }; then
 fi
 
 export MACOSX_DEPLOYMENT_TARGET=10.15
+# Some linker/toolchain combinations ignore the environment variable for the
+# final executable. Pass the deployment target to ld as well so LC_BUILD_VERSION
+# cannot silently stay at 11.0 when building on a newer SDK.
+if [ -n "${RUSTFLAGS:-}" ]; then
+  export RUSTFLAGS="$RUSTFLAGS -C link-arg=-mmacosx-version-min=10.15"
+else
+  export RUSTFLAGS="-C link-arg=-mmacosx-version-min=10.15"
+fi
 
 if [ -n "$target" ] && ! rustup target list --installed | grep -qx "$target"; then
   echo "Installing the Rust target required for an Intel Catalina build: $target"
@@ -73,7 +81,7 @@ fi
 
 binary="$output_root/$profile/bibleown"
 bundle_root="$output_root/$profile/bundle/osx"
-app="$bundle_root/BibleOWN.app"
+app="$bundle_root/BibleOWN-Catalina.app"
 contents="$app/Contents"
 
 if [ ! -f "$binary" ]; then
@@ -81,7 +89,32 @@ if [ ! -f "$binary" ]; then
   exit 1
 fi
 
-rm -rf "$app"
+binary_minos="$({
+  otool -l "$binary" | awk '
+    $1 == "cmd" && $2 == "LC_BUILD_VERSION" { build = 1; legacy = 0; next }
+    $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" { legacy = 1; build = 0; next }
+    build && $1 == "minos" { print $2; exit }
+    legacy && $1 == "version" { print $2; exit }
+  '
+} || true)"
+
+if [ -z "$binary_minos" ]; then
+  echo "Cannot determine the Mach-O minimum macOS version for $binary." >&2
+  exit 1
+fi
+
+min_major="${binary_minos%%.*}"
+min_rest="${binary_minos#*.}"
+min_minor="${min_rest%%.*}"
+if [ "$min_major" -gt 10 ] || { [ "$min_major" -eq 10 ] && [ "$min_minor" -gt 15 ]; }; then
+  echo "Refusing to package $binary: Mach-O minimum is macOS $binary_minos, not Catalina." >&2
+  echo "Remove the target directory and run this script again." >&2
+  exit 1
+fi
+
+# Remove the old cargo-bundle output as well, so Finder cannot accidentally
+# open a stale package whose Info.plist still says macOS 11.
+rm -rf "$bundle_root/BibleOWN.app" "$app"
 mkdir -p "$contents/MacOS" "$contents/Resources"
 cp "$binary" "$contents/MacOS/bibleown"
 chmod 755 "$contents/MacOS/bibleown"
@@ -120,13 +153,19 @@ cat > "$contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+plist_minos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$contents/Info.plist")"
+if [ "$plist_minos" != "10.15" ]; then
+  echo "Refusing to package: Info.plist minimum is $plist_minos, not 10.15." >&2
+  exit 1
+fi
+
 # Ad-hoc signing validates the locally transferred beta bundle. Public
 # distribution still requires Developer ID signing and notarization.
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "$app"
 fi
 
-archive="$bundle_root/BibleOWN-macos-10.15-$bundle_arch.zip"
+archive="$bundle_root/BibleOWN-Catalina-$bundle_arch.zip"
 rm -f "$archive"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
 
@@ -137,6 +176,8 @@ echo "Transfer archive:"
 echo "  $archive"
 echo
 echo "Open it in Finder. It does not launch a Terminal window."
+echo "Verified Mach-O minimum: macOS $binary_minos"
+echo "Verified Info.plist minimum: macOS $plist_minos"
 if [ -n "$target" ]; then
   echo "This bundle is Intel x86_64 and is suitable for macOS 10.15 Catalina."
 fi
