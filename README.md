@@ -74,7 +74,7 @@ cargo test --workspace --all-targets
 
 - обычный `cargo build` на Windows встраивает `windows/mob.ico` в `.exe` как
   ресурс с ID `1`; этот же ресурс GPUI использует для окна и панели задач;
-- для macOS `cargo bundle --release` создаёт `.app` с `macos/mob.icns`;
+- для macOS `scripts/build-macos.sh --bundle` создаёт `.app` с `macos/mob.icns`;
 - `mob-logo-master-1024.png` остаётся мастер-файлом для магазинов и будущих
   форматов упаковки.
 
@@ -111,12 +111,9 @@ cargo run --release
 
 ### Release для macOS
 
-Для создания macOS-пакета один раз установите упаковщик и запускайте команду
-на Mac:
-
-Минимальная поддерживаемая версия — **macOS 10.15 Catalina**. Для обычной
-debug-сборки запускайте совместимый сценарий: он проверит версию macOS,
-выставит deployment target 10.15 и сохранит всю доступную функциональность.
+Минимальная поддерживаемая версия — **macOS 10.15 Catalina**. Проект содержит
+собственный упаковщик `.app`, поэтому установка `cargo-bundle` не требуется.
+Сценарий проверяет версию macOS и выставляет deployment target 10.15.
 
 ```sh
 sh scripts/build-macos.sh
@@ -124,13 +121,27 @@ sh scripts/build-macos.sh --release
 sh scripts/build-macos.sh --bundle --release
 ```
 
-Бэкенд GPUI в проекте использует совместимый с Catalina API типов файлов и не
-линкует отсутствующий там `UniformTypeIdentifiers.framework`.
+Последняя команда создаёт обычное приложение
+`target/release/bundle/osx/BibleOWN.app`. Его нужно открывать через Finder —
+окно Terminal при этом не появляется.
+
+Чтобы на Mac с процессором M1/M2/M3/M4 собрать приложение для старого Intel
+Mac с Catalina, используйте отдельный режим:
 
 ```sh
-cargo install cargo-bundle
-sh scripts/build-macos.sh --bundle --release
+sh scripts/build-macos.sh --bundle --intel-catalina --release
 ```
+
+Он установит Rust-цель `x86_64-apple-darwin`, соберёт именно Intel-бинарник и
+создаст пакет в
+`target/x86_64-apple-darwin/release/bundle/osx/BibleOWN.app`. Обычная сборка,
+созданная на M1 без `--intel-catalina`, является ARM64-приложением и на Intel
+Mac не запустится независимо от указанной минимальной версии macOS.
+Рядом автоматически создаётся ZIP-архив; для переноса на другой Mac лучше
+использовать именно его, чтобы сохранить структуру пакета и права файлов.
+
+Бэкенд GPUI в проекте использует совместимый с Catalina API типов файлов и не
+линкует отсутствующий там `UniformTypeIdentifiers.framework`.
 
 Готовый пакет находится в `target/release/bundle/osx/BibleOWN.app`. Именно
 пакет `.app` получает `resources/branding/macos/mob.icns` и отображает иконку
@@ -148,13 +159,9 @@ otool -l target/release/bundle/osx/BibleOWN.app/Contents/MacOS/bibleown \
 
 В обоих случаях минимальная версия должна быть `10.15`.
 
-Для универсальной macOS-сборки Intel + Apple Silicon:
-
-```sh
-cargo bundle --release \
-  --target x86_64-apple-darwin \
-  --target aarch64-apple-darwin
-```
+Для бета-теста на Catalina рекомендуется отдельный Intel-пакет, а не
+универсальный bundle: так проще проверить реальную архитектуру и минимальную
+версию каждого исполняемого файла.
 
 ## Синхронизация и перенос данных
 

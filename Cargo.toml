@@ -97,8 +97,8 @@ gpui-pre-platform = { version = "=0.3.12", features = ["runtime_shaders"] }
 [build-dependencies]
 embed-resource = "3.0"
 
-# `cargo bundle --release` uses these assets when producing a macOS `.app`
-# (and an installer on the other supported platforms).
+# Bundle metadata is retained for compatible third-party packagers. The
+# supported Catalina workflow uses scripts/build-macos.sh and the same assets.
 [package.metadata.bundle]
 name = "BibleOWN"
 identifier = "com.bibleown.desktop"
@@ -109,8 +109,7 @@ icon = [
 ]
 category = "Education"
 short_description = "Bible study, notes, and synchronization"
-# cargo-bundle <= 0.11 spelling. Keep it alongside the current nested form so
-# both packaging workflows emit LSMinimumSystemVersion=10.15.
+# Keep both common metadata spellings so optional packagers also emit 10.15.
 osx_minimum_system_version = "10.15"
 
 [package.metadata.bundle.osx]
