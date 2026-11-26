@@ -21,6 +21,12 @@ const TOKEN: &str = "https://oauth2.googleapis.com/token";
 const DRIVE: &str = "https://www.googleapis.com/drive/v3/";
 const UPLOAD: &str = "https://www.googleapis.com/upload/drive/v3/files";
 const MARKER: &str = "bibleown-sync-v1";
+// OAuth Desktop clients are public clients: distributed applications cannot
+// keep a client secret confidential. Embed only the public Client ID and use
+// PKCE for every authorization-code exchange. The build-time environment
+// variable remains an override for forks and local development.
+const BUNDLED_CLIENT_ID: &str =
+    "108525654331-tlkmug1o0m2nefre3r2bkmn8hoopceic.apps.googleusercontent.com";
 
 fn random_secret() -> Result<String> {
     let mut bytes = [0; 32];
@@ -52,9 +58,7 @@ impl Client {
     }
 
     pub fn bundled() -> Result<Option<Self>> {
-        let Some(id) = option_env!("BIBLEOWN_GOOGLE_CLIENT_ID") else {
-            return Ok(None);
-        };
+        let id = option_env!("BIBLEOWN_GOOGLE_CLIENT_ID").unwrap_or(BUNDLED_CLIENT_ID);
         Ok(Some(
             Self {
                 client_id: id.into(),
@@ -561,4 +565,16 @@ fn request(
     let status = std::str::from_utf8(&body[end..])?.parse()?;
     body.truncate(end);
     Ok(Response { status, body })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_desktop_client_is_available_without_json_file() {
+        let client = Client::bundled().unwrap().unwrap();
+        assert!(client.id().ends_with(".apps.googleusercontent.com"));
+        assert!(!client.id().contains(char::is_whitespace));
+    }
 }

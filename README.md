@@ -188,9 +188,10 @@ otool -l target/release/bundle/osx/BibleOWN-Catalina.app/Contents/MacOS/bibleown
    устанавливаемых копий приложения. Скопируйте Client ID. Client secret для
    desktop-приложения не является конфиденциальным и в этой реализации
    необязателен благодаря PKCE. [Инструкция Google](https://developers.google.com/identity/protocols/oauth2/native-app)
-4. Передайте Client ID как переменную окружения при сборке. Он будет встроен в
-   бинарник, поэтому пользователю на новом устройстве не потребуется JSON-файл.
-   Пример для macOS и Linux:
+4. Официальный beta Client ID BibleOWN уже встроен в исходный код. Пользователю
+   на новом устройстве не потребуется JSON-файл: достаточно нажать
+   «Подключить Google Drive». Для форка или локального OAuth-проекта Client ID
+   можно переопределить при сборке. Пример для macOS и Linux:
 
    ```sh
    BIBLEOWN_GOOGLE_CLIENT_ID='ваш-client-id.apps.googleusercontent.com' cargo build --release
@@ -203,8 +204,10 @@ otool -l target/release/bundle/osx/BibleOWN-Catalina.app/Contents/MacOS/bibleown
    cargo build --release
    ```
 
-   Если конкретный OAuth-клиент требует Client secret, его по-прежнему можно
-   передать через `BIBLEOWN_GOOGLE_CLIENT_SECRET`, но считать его секретом внутри
+   `client_secret` из загруженного JSON не встраивается: для Google Desktop app
+   он необязателен, а поток BibleOWN защищён PKCE. При необходимости локальная
+   сборка по-прежнему может получить его через
+   `BIBLEOWN_GOOGLE_CLIENT_SECRET`, но считать его секретом внутри
    распространяемого desktop-бинарника нельзя.
 
 Для закрытого теста оставьте Audience в режиме **Testing** и добавьте тестовые
@@ -220,7 +223,8 @@ non-sensitive и даёт доступ только к скрытой папке
 **«Подключить Google Drive»**. Выберите аккаунт в браузере, разрешите доступ и
 вернитесь в BibleOWN. Статус сменится на **«Google Drive подключён»**, после
 чего начнётся обмен данными. Для сборок без включённого клиента доступна кнопка
-«OAuth-клиент…», которая принимает JSON для локальной разработки.
+«OAuth-клиент…» остаётся только для локальной разработки и форков с другим
+OAuth-проектом.
 
 На Linux для Drive нужны
 `curl`, `secret-tool` и работающая служба Secret Service. На Windows используется
