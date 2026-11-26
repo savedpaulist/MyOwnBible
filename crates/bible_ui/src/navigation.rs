@@ -186,6 +186,7 @@ pub struct TagsChanged;
 #[derive(Debug, Clone, Copy)]
 pub struct OpenTagPicker {
     pub reference: Option<bible_domain::ids::VerseRef>,
+    pub target_tab: Option<u64>,
 }
 
 /// Запрос открыть пикер «добавить стих в цепочку» (этап 23). Откликается
@@ -194,6 +195,7 @@ pub struct OpenTagPicker {
 #[derive(Debug, Clone, Copy)]
 pub struct OpenChainPicker {
     pub reference: Option<bible_domain::ids::VerseRef>,
+    pub target_tab: Option<u64>,
 }
 
 /// Запрос открыть заметку отдельной вкладкой в центре (этап 15.2):
@@ -539,13 +541,53 @@ pub fn notify_tags_changed(cx: &mut App) {
 /// Запросить пикер тегов: Some — для конкретного стиха (контекстное
 /// меню), None — для активного стиха чтения (кнопка Status bar).
 pub fn request_open_tag_picker(cx: &mut App, reference: Option<bible_domain::ids::VerseRef>) {
-    bus(cx).update(cx, |_, cx| cx.emit(OpenTagPicker { reference }));
+    let target_tab = history(cx).read(cx).active;
+    bus(cx).update(cx, |_, cx| {
+        cx.emit(OpenTagPicker {
+            reference,
+            target_tab,
+        })
+    });
+}
+
+pub fn request_open_tag_picker_for_tab(
+    cx: &mut App,
+    reference: bible_domain::ids::VerseRef,
+    target_tab: u64,
+) {
+    history_set_active(cx, target_tab);
+    bus(cx).update(cx, |_, cx| {
+        cx.emit(OpenTagPicker {
+            reference: Some(reference),
+            target_tab: Some(target_tab),
+        })
+    });
 }
 
 /// Запросить пикер «стих → цепочка» (этап 23): Some — конкретный стих
 /// (контекстное меню), None — активный стих чтения (кнопка Status bar).
 pub fn request_open_chain_picker(cx: &mut App, reference: Option<bible_domain::ids::VerseRef>) {
-    bus(cx).update(cx, |_, cx| cx.emit(OpenChainPicker { reference }));
+    let target_tab = history(cx).read(cx).active;
+    bus(cx).update(cx, |_, cx| {
+        cx.emit(OpenChainPicker {
+            reference,
+            target_tab,
+        })
+    });
+}
+
+pub fn request_open_chain_picker_for_tab(
+    cx: &mut App,
+    reference: bible_domain::ids::VerseRef,
+    target_tab: u64,
+) {
+    history_set_active(cx, target_tab);
+    bus(cx).update(cx, |_, cx| {
+        cx.emit(OpenChainPicker {
+            reference: Some(reference),
+            target_tab: Some(target_tab),
+        })
+    });
 }
 
 /// Запросить открытие заметки вкладкой в центре (этап 15.2).

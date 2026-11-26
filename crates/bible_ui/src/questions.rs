@@ -104,7 +104,7 @@ impl QuestionsPanel {
                     links: existing.links,
                     editing_comment: None,
                     editing_question: false,
-                    editing_answer: false,
+                    editing_answer: true,
                 },
             )
         } else {

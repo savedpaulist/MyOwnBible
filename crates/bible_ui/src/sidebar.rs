@@ -1,6 +1,6 @@
 //! Левая панель с раскрываемой полосой разделов.
 
-use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::base::{HandleEdge, h_flex, resize_handle, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
@@ -11,7 +11,9 @@ use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,17 +26,30 @@ use shell::notes::{IndexEvent, NotesHandle, NotesSubscription};
 use crate::annotations as palette;
 use crate::dictionary::DictionaryBrowser;
 use crate::navigation;
+use crate::panels::SearchPanel;
 use crate::services::app_services;
 
 /// Пункт менюшки.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Section {
+    Search,
     Dictionaries,
     Notes,
     Comments,
     Tags,
     Chains,
     Questions,
+}
+
+#[derive(Clone)]
+struct ResizeSidebar {
+    previous_x: Rc<Cell<Option<Pixels>>>,
+}
+
+impl Render for ResizeSidebar {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
 }
 
 #[derive(Clone)]
@@ -173,6 +188,7 @@ fn note_tree_items(
 impl Section {
     fn from_settings(value: &str) -> Self {
         match value {
+            "search" => Self::Search,
             "notes" => Self::Notes,
             "comments" => Self::Comments,
             "tags" => Self::Tags,
@@ -184,6 +200,7 @@ impl Section {
 
     fn as_settings(self) -> &'static str {
         match self {
+            Self::Search => "search",
             Self::Dictionaries => "dictionaries",
             Self::Notes => "notes",
             Self::Comments => "comments",
@@ -197,6 +214,7 @@ impl Section {
         crate::i18n::tr(
             cx,
             match self {
+                Self::Search => "Поиск",
                 Self::Dictionaries => "Словари",
                 Self::Notes => "Заметки",
                 Self::Comments => "Комментарии",
@@ -209,6 +227,7 @@ impl Section {
 
     fn icon(self) -> gpui_kit::assets::IconName {
         match self {
+            Self::Search => gpui_kit::assets::IconName::Search,
             Self::Dictionaries => gpui_kit::assets::IconName::BookA,
             Self::Notes => gpui_kit::assets::IconName::NotebookPen,
             Self::Comments => gpui_kit::assets::IconName::MessageSquare,
@@ -224,6 +243,8 @@ pub struct SidebarView {
     collapsed: bool,
     /// Контент выбранного раздела; при скрытии остаётся только полоса иконок.
     content_visible: bool,
+    content_width: Pixels,
+    search: Entity<SearchPanel>,
     dictionaries: Entity<DictionaryBrowser>,
     chains: Entity<crate::chains::ChainsPanel>,
     questions: Entity<crate::questions::QuestionsPanel>,
@@ -258,7 +279,7 @@ pub struct SidebarView {
 }
 
 impl SidebarView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(search: Entity<SearchPanel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let dictionaries = cx.new(|cx| DictionaryBrowser::new(window, cx));
         let chains = cx.new(|cx| crate::chains::ChainsPanel::new(window, cx));
         let questions = cx.new(|cx| crate::questions::QuestionsPanel::new(window, cx));
@@ -432,6 +453,8 @@ impl SidebarView {
             section: Section::from_settings(&settings.sidebar_section),
             collapsed: settings.sidebar_collapsed,
             content_visible: settings.sidebar_visible,
+            content_width: px(settings.sidebar_content_width.max(120.)),
+            search,
             dictionaries,
             chains,
             questions,
@@ -469,6 +492,10 @@ impl SidebarView {
             this.reload_tags(cx);
         }
         this
+    }
+
+    pub fn show_search(&mut self, cx: &mut Context<Self>) {
+        self.show_section(Section::Search, cx);
     }
 
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
@@ -1532,6 +1559,7 @@ impl SidebarView {
 
     fn render_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
+            Section::Search => self.search.clone().into_any_element(),
             Section::Dictionaries => self.dictionaries.clone().into_any_element(),
             Section::Notes => self.render_notes(cx),
             Section::Comments => self.render_comments(cx),
@@ -1552,6 +1580,7 @@ impl Render for SidebarView {
         let rail_background = cx.theme().sidebar;
         let rail_foreground = cx.theme().sidebar_foreground;
         let menu = [
+            Section::Search,
             Section::Dictionaries,
             Section::Notes,
             Section::Comments,
@@ -1613,16 +1642,6 @@ impl Render for SidebarView {
             .child(div().flex_1())
             .child(
                 rail_button(
-                    "open-settings",
-                    IconName::Settings,
-                    crate::i18n::tr(cx, "Настройки"),
-                    !collapsed,
-                    false,
-                )
-                .on_click(|_, _, cx| crate::settings::open_settings_window(cx)),
-            )
-            .child(
-                rail_button(
                     "toggle-sidebar-labels",
                     if collapsed {
                         IconName::PanelLeftOpen
@@ -1653,23 +1672,66 @@ impl Render for SidebarView {
                 )
                 .justify_center()
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_content(cx))),
+            )
+            .child(
+                rail_button(
+                    "open-settings",
+                    IconName::Settings,
+                    crate::i18n::tr(cx, "Настройки"),
+                    !collapsed,
+                    false,
+                )
+                .on_click(|_, _, cx| crate::settings::open_settings_window(cx)),
             );
         let section = self.section;
         let content = self.render_content(cx);
-        let mut layout = h_flex().h_full().child(rail);
+        let mut layout = h_flex()
+            .h_full()
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<ResizeSidebar>, _, cx| {
+                    let drag = event.drag(cx);
+                    let current_x = event.event.position.x;
+                    let Some(previous_x) = drag.previous_x.replace(Some(current_x)) else {
+                        // The handle's drag-start offset and DragMoveEvent use
+                        // different coordinate spaces. Treat the first
+                        // absolute move as the origin instead of resizing.
+                        return;
+                    };
+                    let width = (this.content_width + current_x - previous_x).max(px(120.));
+                    if this.content_width != width {
+                        this.content_width = width;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_drop(cx.listener(|this, _: &ResizeSidebar, _, cx| {
+                let width = this.content_width / px(1.);
+                if let Err(error) = shell::settings::update(app_services(cx), |settings| {
+                    settings.sidebar_content_width = width;
+                }) {
+                    log::error!("save sidebar content width: {error:#}");
+                }
+            }))
+            .child(rail);
         if self.content_visible {
+            let resize = ResizeSidebar {
+                previous_x: Rc::new(Cell::new(None)),
+            };
             layout = layout.child(
                 div()
-                    .w(px(match self.section {
-                        Section::Chains | Section::Questions => 340.,
-                        _ => 280.,
-                    }))
+                    .relative()
+                    .w(self.content_width)
                     .flex_shrink_0()
                     .h_full()
                     .min_h_0()
                     .border_r_1()
                     .border_color(cx.theme().border)
                     .child(content)
+                    .child(
+                        resize_handle("sidebar-content-resize", Axis::Horizontal)
+                            .inside(HandleEdge::Trailing)
+                            .on_drag(resize, |drag, _, _, cx| cx.new(|_| drag.clone())),
+                    )
                     .context_menu(move |menu, _, _| match section {
                         Section::Notes => menu.item(
                             PopupMenuItem::new(crate::i18n::tr_static("Создать новую заметку"))

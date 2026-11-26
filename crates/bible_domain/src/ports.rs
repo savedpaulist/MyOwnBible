@@ -66,10 +66,13 @@ pub trait AnnotationStore: Send + Sync {
 
     /// Комментарий к стиху/слову.
     fn comment(&self, anchor: &AnchoredRef) -> Result<Option<VerseComment>>;
+    /// Все личные заметки по месту, новые первыми.
+    fn comments(&self, anchor: &AnchoredRef) -> Result<Vec<VerseComment>>;
     /// Поставить/заменить комментарий (пустое тело не сохраняем —
     /// вызывающий код должен звать remove_comment).
     fn put_comment(&self, comment: &VerseComment) -> Result<()>;
     fn remove_comment(&self, anchor: &AnchoredRef) -> Result<bool>;
+    fn remove_comment_by_id(&self, id: &str) -> Result<bool>;
     /// Все комментарии книги по всем модулям.
     fn comments_for_book(&self, book: BookNumber) -> Result<Vec<VerseComment>>;
 }

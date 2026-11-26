@@ -25,6 +25,7 @@ use gpui_kit::component::{ActiveTheme as _, Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use bible_domain::annotations::VerseComment;
 use bible_domain::content::{ContentBlock, ContentInline, TextMarks};
 use bible_domain::ids::{AnchoredRef, ModuleId, VerseRef};
 use bible_domain::link::LinkTarget;
@@ -89,6 +90,8 @@ pub struct ContextPanel {
     location: Option<shell::CurrentLocation>,
     /// Редактор моего комментария к активному стиху (секция «Заметки»).
     comment_input: Entity<TextareaState>,
+    /// Independent saved notes for the active verse, newest first.
+    verse_notes: Vec<VerseComment>,
     /// Цепочки, использующие активный стих (полоса над секциями, §6.8).
     chain_hits: Vec<shell::chains::ChainHit>,
     /// Пикер Strong's-словаря секции «Слово» (закрепление в настройках).
@@ -249,6 +252,7 @@ impl ContextPanel {
             context,
             location,
             comment_input,
+            verse_notes: Vec::new(),
             chain_hits: Vec::new(),
             cross_ref_error: None,
             dict_select,
@@ -260,7 +264,7 @@ impl ContextPanel {
         // Восстановленное место — сразу грузим комментарий к нему.
         let location = this.location.clone();
         if let Some(location) = location {
-            this.load_comment(&location, cx);
+            this.load_comment(&location, window, cx);
             this.load_chain_hits(cx);
         }
         this
@@ -270,7 +274,7 @@ impl ContextPanel {
     fn activate_verse(
         &mut self,
         event: &VerseActivated,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let location = event.location();
@@ -293,7 +297,7 @@ impl ContextPanel {
         self.cross_ref_error = None;
         self.context = Some(shell::verse_context(app_services(cx), &location));
         self.location = Some(location.clone());
-        self.load_comment(&location, cx);
+        self.load_comment(&location, window, cx);
         self.load_chain_hits(cx);
     }
 
@@ -319,30 +323,46 @@ impl ContextPanel {
         }
     }
 
-    /// Загружает сохранённый комментарий в редактор (пусто — если нет).
-    fn load_comment(&mut self, location: &shell::CurrentLocation, cx: &mut Context<Self>) {
-        let body = shell::verse_comment(app_services(cx), &Self::comment_anchor(location))
-            .map(|comment| comment.body)
-            .unwrap_or_default();
-        // WeakEntity::update_in сам достаёт окно (AppContext-вариант).
-        _ = self
-            .comment_input
-            .downgrade()
-            .update_in(cx, |input, window, cx| {
-                input.set_value(body, window, cx);
-            });
+    /// Загружает список заметок, а редактор оставляет чистым для новой записи.
+    fn load_comment(
+        &mut self,
+        location: &shell::CurrentLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.verse_notes = shell::verse_comments(app_services(cx), &Self::comment_anchor(location));
+        self.comment_input.update(cx, |input, cx| {
+            input.set_value(String::new(), window, cx);
+        });
     }
 
     /// Сохраняет комментарий; пустой текст удаляет (контракт shell).
-    fn save_comment(&mut self, cx: &mut Context<Self>) {
+    fn save_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(location) = &self.location else {
             return;
         };
         let body = self.comment_input.read(cx).value().to_string();
+        if body.trim().is_empty() {
+            return;
+        }
         if let Err(error) =
             shell::save_verse_comment(app_services(cx), Self::comment_anchor(location), &body)
         {
             log::error!("save verse comment failed: {error:#}");
+            return;
+        }
+        let location = location.clone();
+        self.load_comment(&location, window, cx);
+        navigation::notify_annotations_changed(cx);
+    }
+
+    fn remove_comment(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = shell::remove_verse_comment(app_services(cx), id) {
+            log::error!("remove verse comment failed: {error:#}");
+            return;
+        }
+        if let Some(location) = self.location.clone() {
+            self.load_comment(&location, window, cx);
         }
         navigation::notify_annotations_changed(cx);
     }
@@ -1021,6 +1041,8 @@ impl ContextPanel {
             return Self::no_verse_hint(cx);
         }
         let weak = cx.entity().downgrade();
+        let weak_save = weak.clone();
+        let notes = self.verse_notes.clone();
         v_flex()
             .w_full()
             .min_w_0()
@@ -1035,7 +1057,7 @@ impl ContextPanel {
                         "Комментарий привязан к активному переводу стиха.",
                     )),
             )
-            .child(Textarea::new(&self.comment_input).h(px(140.)))
+            .child(Textarea::new(&self.comment_input).h(px(110.)))
             .child(
                 h_flex()
                     .w_full()
@@ -1046,17 +1068,54 @@ impl ContextPanel {
                             .primary()
                             .xsmall()
                             .label(crate::i18n::tr(cx, "Сохранить"))
-                            .on_click(move |_, _, cx| {
-                                _ = weak.update(cx, |this, cx| this.save_comment(cx));
+                            .on_click(move |_, window, cx| {
+                                _ = weak_save.update(cx, |this, cx| this.save_comment(window, cx));
                             }),
                     )
                     .child(
                         div()
                             .text_size(px(crate::ui_scale::panel_font_size(cx, 12.0)))
                             .text_color(cx.theme().muted_foreground)
-                            .child(crate::i18n::tr(cx, "Пустой текст удаляет комментарий.")),
+                            .child(crate::i18n::tr(
+                                cx,
+                                "Каждое сохранение создаёт отдельную заметку.",
+                            )),
                     ),
             )
+            .children(notes.into_iter().map(|note| {
+                let id = note.id.clone();
+                h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap_2()
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().sidebar)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .child(note.body),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("remove-verse-note-{id}")))
+                            .xsmall()
+                            .ghost()
+                            .icon(gpui_kit::assets::IconName::X)
+                            .tooltip(crate::i18n::tr_static("Удалить заметку"))
+                            .on_click({
+                                let weak = weak.clone();
+                                move |_, window, cx| {
+                                    _ = weak.update(cx, |this, cx| {
+                                        this.remove_comment(&id, window, cx)
+                                    });
+                                }
+                            }),
+                    )
+            }))
             .into_any_element()
     }
 

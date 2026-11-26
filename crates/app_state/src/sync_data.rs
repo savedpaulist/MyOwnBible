@@ -66,6 +66,7 @@ const ANNOTATIONS: Table = Table {
 const COMMENTS: Table = Table {
     name: "verse_comments",
     columns: &[
+        "id",
         "module_id",
         "book",
         "chapter",
@@ -76,7 +77,7 @@ const COMMENTS: Table = Table {
         "created_at",
         "updated_at",
     ],
-    key: &["module_id", "book", "chapter", "verse", "word_index"],
+    key: &["id"],
 };
 const CHAINS: Table = Table {
     name: "chains",

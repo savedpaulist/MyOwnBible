@@ -89,6 +89,8 @@ impl Annotation {
 /// тогда заполнен `note_relpath`, а тело остаётся аннотацией-заголовком.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerseComment {
+    /// Stable identity: several notes may share the same verse anchor.
+    pub id: String,
     pub anchor: AnchoredRef,
     pub body: String,
     pub note_relpath: Option<String>,

@@ -91,12 +91,6 @@ const ENTRIES: &[PaletteEntry] = &[
         command: PaletteCommand::ToggleDock(DockPlacement::Left),
     },
     PaletteEntry {
-        label: "Нижняя панель",
-        icon: assets::IconName::PanelBottom,
-        keywords: &["panel", "dock", "поиск", "панель"],
-        command: PaletteCommand::ToggleDock(DockPlacement::Bottom),
-    },
-    PaletteEntry {
         label: "Правая панель",
         icon: assets::IconName::PanelRight,
         keywords: &["panel", "dock", "словарь", "контекст", "панель"],

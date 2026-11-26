@@ -18,8 +18,8 @@ pub mod themes;
 pub mod verse_context;
 
 pub use annotations::{
-    BookAnnotations, VerseMarks, book_annotations, clear_annotation, save_verse_comment,
-    set_annotation, split_annotations, verse_comment,
+    BookAnnotations, VerseMarks, book_annotations, clear_annotation, remove_verse_comment,
+    save_verse_comment, set_annotation, split_annotations, verse_comment, verse_comments,
 };
 pub use article::{
     ArticleViewModel, ReferenceViewModel, open_commentary, open_cross_references,

@@ -14,6 +14,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Icon, IconName, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -41,6 +42,17 @@ enum SearchMode {
 }
 
 impl SearchMode {
+    fn label(self, cx: &App) -> SharedString {
+        crate::i18n::tr(
+            cx,
+            match self {
+                Self::Exact => "Точное",
+                Self::Partial => "Частичное",
+                Self::Similar => "Похожее",
+            },
+        )
+    }
+
     fn query(self, input: &str) -> String {
         let input = input.trim();
         match self {
@@ -1125,13 +1137,15 @@ impl Render for SearchPanel {
                     .p_2()
                     .border_b_1()
                     .border_color(theme.border)
+                    // Row 1: query and the primary action. Pressing Enter in
+                    // the input is wired to the same run_search path in new().
                     .child(
                         h_flex()
                             .w_full()
                             .gap_2()
                             .child(
                                 div()
-                                    .w(relative(0.5))
+                                    .flex_1()
                                     .min_w_0()
                                     .child(Input::new(&self.query_input)),
                             )
@@ -1143,7 +1157,13 @@ impl Render for SearchPanel {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.run_search(window, cx);
                                     })),
-                            )
+                            ),
+                    )
+                    // Row 2: source selection and reset.
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
                             .child(
                                 Button::new("search-sources")
                                     .xsmall()
@@ -1152,6 +1172,7 @@ impl Render for SearchPanel {
                                         open_sources_window(cx.entity(), cx);
                                     })),
                             )
+                            .child(div().flex_1())
                             .child(
                                 Button::new("search-clear")
                                     .xsmall()
@@ -1174,59 +1195,46 @@ impl Render for SearchPanel {
                                     })),
                             ),
                     )
+                    // Row 3: one compact search-mode menu and diacritics.
                     .child(
                         h_flex()
                             .w_full()
                             .gap_2()
                             .child(
-                                Button::new("search-mode-exact")
+                                Button::new("search-mode")
                                     .xsmall()
-                                    .when(self.search_mode == SearchMode::Exact, |button| {
-                                        button.primary()
-                                    })
-                                    .label(crate::i18n::tr(cx, "Точное"))
-                                    .tooltip(crate::i18n::tr(cx, "Точная фраза и порядок слов. Например: «благодать и истина»."))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.search_mode = SearchMode::Exact;
-                                        this.run_search(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("search-mode-partial")
-                                    .xsmall()
-                                    .when(self.search_mode == SearchMode::Partial, |button| {
-                                        button.primary()
-                                    })
-                                    .label(crate::i18n::tr(cx, "Частичное"))
-                                    .tooltip(crate::i18n::tr(cx, "Все введённые начала слов. Например: «благо истин» найдёт формы обоих слов."))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.search_mode = SearchMode::Partial;
-                                        this.run_search(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("search-mode-similar")
-                                    .xsmall()
-                                    .when(self.search_mode == SearchMode::Similar, |button| {
-                                        button.primary()
-                                    })
-                                    .label(crate::i18n::tr(cx, "Похожее"))
-                                    .tooltip(crate::i18n::tr(cx, "Любое из введённых начал слов. Например: «мир свет» найдёт стихи хотя бы с одним словом."))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.search_mode = SearchMode::Similar;
-                                        this.run_search(window, cx);
-                                        cx.notify();
-                                    })),
+                                    .label(self.search_mode.label(cx))
+                                    .dropdown_menu({
+                                        let panel = cx.weak_entity();
+                                        move |mut menu, _, cx| {
+                                            for mode in [
+                                                SearchMode::Exact,
+                                                SearchMode::Partial,
+                                                SearchMode::Similar,
+                                            ] {
+                                                let panel = panel.clone();
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(mode.label(cx)).on_click(
+                                                        move |_, _, cx| {
+                                                            _ = panel.update(cx, |this, cx| {
+                                                                this.search_mode = mode;
+                                                                cx.notify();
+                                                            });
+                                                        },
+                                                    ),
+                                                );
+                                            }
+                                            menu
+                                        }
+                                    }),
                             )
                             .child(
                                 Checkbox::new("search-diacritics")
-                                    .label(crate::i18n::tr(cx, "Учитывать диакритику/огласовки"))
+                                    .label(crate::i18n::tr(cx, "Уч.Диак."))
+                                    .tooltip(crate::i18n::tr(cx, "Учитывать диакритику/огласовки"))
                                     .checked(self.respect_diacritics)
-                                    .on_click(cx.listener(|this, checked, window, cx| {
+                                    .on_click(cx.listener(|this, checked, _window, cx| {
                                         this.respect_diacritics = *checked;
-                                        this.run_search(window, cx);
                                         cx.notify();
                                     })),
                             ),

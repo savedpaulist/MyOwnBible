@@ -938,14 +938,18 @@ impl ChainsPanel {
             )
             .child(markers)
             .child(
-                h_flex()
+                v_flex()
+                    .w_full()
                     .gap_1()
-                    .flex_wrap()
+                    .p_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().accent.opacity(0.55))
+                    .bg(cx.theme().accent.opacity(0.08))
                     .child(
                         Button::new(SharedString::from(format!("chain-add-before-{before_id}")))
                             .xsmall()
-                            .ghost()
-                            .label(crate::i18n::tr_static("+ До"))
+                            .label(crate::i18n::tr_static("Добавить причину"))
                             .tooltip(crate::i18n::tr_static("Добавить предпосылку перед узлом"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.start_form(
@@ -960,8 +964,7 @@ impl ChainsPanel {
                     .child(
                         Button::new(SharedString::from(format!("chain-add-after-{node_id}")))
                             .xsmall()
-                            .ghost()
-                            .label(crate::i18n::tr_static("+ После"))
+                            .label(crate::i18n::tr_static("Добавить следствие"))
                             .tooltip(crate::i18n::tr_static("Добавить следствие после узла"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.start_form(

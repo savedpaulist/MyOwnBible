@@ -1,4 +1,4 @@
-//! Корневой View окна: TitleBar + DockArea + StatusBar (architecture.md §6.1).
+//! Корневой View окна: TitleBar + sidebar + DockArea (architecture.md §6.1).
 //!
 //! Раскладка панелей сериализуется в layout.json (architecture.md §7.1):
 //! запись с debounce по `DockEvent::LayoutChanged` и при выходе,
@@ -9,11 +9,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui_kit::base::h_flex;
+use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::dock::{
     DockArea, DockAreaState, DockEvent, DockLayout, DockPlacement, DockSkin, PanelId, panel_handle,
 };
-use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme as _, IconName, TitleBar};
 use gpui_kit::component::{
     Disableable as _, Sizable as _,
@@ -40,7 +39,8 @@ const DOCK_ID: &str = "main-dock";
 // v5: левый док убран — его панели («Библиотека», «Заметки») переехали
 // в левую менюшку (этап 15, sidebar.rs).
 // v6: settings moved from a central dock tab to a dedicated window.
-const DOCK_VERSION: usize = 6;
+// v7: search moved from the bottom dock into the persistent left sidebar.
+const DOCK_VERSION: usize = 7;
 
 pub struct WorkspaceView {
     dock_area: Entity<DockArea>,
@@ -209,8 +209,9 @@ impl WorkspaceView {
         cx.subscribe_in(
             &crate::navigation::bus(cx),
             window,
-            |this, _, event: &crate::navigation::SearchRequested, window, cx| {
-                this.reveal_panel(SearchPanel::NAME, DockPlacement::Bottom, window, cx);
+            |this, _, event: &crate::navigation::SearchRequested, _window, cx| {
+                this.sidebar
+                    .update(cx, |sidebar, cx| sidebar.show_search(cx));
                 crate::navigation::emit_search_execute(cx, event.query.clone());
             },
         )
@@ -319,6 +320,7 @@ impl WorkspaceView {
         };
         let search_panel =
             restored_search.unwrap_or_else(|| cx.new(|cx| SearchPanel::new(window, cx)));
+        let sidebar = cx.new(|cx| SidebarView::new(search_panel.clone(), window, cx));
         Self {
             dock_area,
             search_panel,
@@ -327,7 +329,7 @@ impl WorkspaceView {
             location_label: None,
             indexing_label: None,
             active_reader: None,
-            sidebar: cx.new(|cx| SidebarView::new(window, cx)),
+            sidebar,
             open_articles: HashMap::new(),
             open_notes: HashMap::new(),
             _save_layout_task: None,
@@ -365,7 +367,6 @@ impl WorkspaceView {
     fn reset_default_layout(dock_area: &Entity<DockArea>, window: &mut Window, cx: &mut App) {
         let reader = cx.new(|cx| ReaderPanel::new(window, cx));
         let context = cx.new(|cx| ContextPanel::new(window, cx));
-        let search = cx.new(|cx| SearchPanel::new(window, cx));
 
         dock_area.update(cx, |area, cx| {
             area.set_center(
@@ -380,18 +381,7 @@ impl WorkspaceView {
                 cx,
             );
             area.set_dock_size(DockPlacement::Right, px(320.), window, cx);
-            area.set_dock(
-                DockPlacement::Bottom,
-                DockLayout::tabs().panel_view(panel_handle(search), cx),
-                window,
-                cx,
-            );
-            area.set_dock_size(DockPlacement::Bottom, px(200.), window, cx);
-            for placement in [
-                DockPlacement::Left,
-                DockPlacement::Bottom,
-                DockPlacement::Right,
-            ] {
+            for placement in [DockPlacement::Left, DockPlacement::Right] {
                 area.set_dock_collapsible(placement, true, window, cx);
             }
         });
@@ -879,133 +869,9 @@ impl WorkspaceView {
             )
             .child(div().flex_1())
     }
-
-    /// Status bar окна: переключатели менюшки и доков, действия над стихом,
-    /// переходы по главам, индикатор фоновой индексации.
-    /// Вынесен из render — см. `icon_button` про кадр стека.
-    fn render_status_bar(&mut self, has_location: bool, cx: &mut Context<Self>) -> StatusBar {
-        let toggle_bottom = icon_button(
-            "toggle-bottom-dock",
-            IconName::Search,
-            crate::i18n::tr(cx, "Поиск"),
-            cx,
-        )
-        .on_click(cx.listener(|this, _, window, cx| {
-            if this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom) {
-                this.dock_area.update(cx, |area, cx| {
-                    area.remove_dock(DockPlacement::Bottom, window, cx);
-                });
-            } else {
-                this.reveal_panel(SearchPanel::NAME, DockPlacement::Bottom, window, cx);
-            }
-        }));
-        // Кнопки действий как в форке (этап 18): поиск, словарь,
-        // перекрёстные, мой комментарий, теги, пред./след. глава. Действуют
-        // на текущее место активной вкладки чтения (общий снимок
-        // current_location).
-        // «Словари» (этап 15.2): панель «Словарь» упразднена — кнопка
-        // раскрывает левую менюшку на разделе словарей.
-        let open_dictionary = icon_button(
-            "open-dictionaries",
-            IconName::BookOpen,
-            crate::i18n::tr(cx, "Словари"),
-            cx,
-        )
-        .on_click(|_, _, cx| {
-            crate::navigation::request_open_sidebar(
-                cx,
-                crate::navigation::SidebarSectionKind::Dictionaries,
-                None,
-            );
-        });
-        let open_crossrefs = icon_button(
-            "open-crossrefs",
-            gpui_kit::assets::IconName::Link2,
-            crate::i18n::tr(cx, "Перекрёстные ссылки к стиху"),
-            cx,
-        )
-        .disabled(!has_location)
-        .on_click(|_, _, cx| {
-            crate::navigation::request_open_verse_section(
-                cx,
-                crate::navigation::VerseSection::CrossRefs,
-            );
-        });
-        let comment_verse = icon_button(
-            "comment-verse",
-            gpui_kit::assets::IconName::SquarePen,
-            crate::i18n::tr(cx, "Мой комментарий к стиху"),
-            cx,
-        )
-        .disabled(!has_location)
-        .on_click(|_, _, cx| {
-            crate::navigation::request_open_verse_section(
-                cx,
-                crate::navigation::VerseSection::Notes,
-            );
-        });
-        // Пикер тегов для активного стиха (этап 21).
-        let tag_verse = icon_button(
-            "tag-verse",
-            gpui_kit::assets::IconName::Tag,
-            crate::i18n::tr(cx, "Теги стиха"),
-            cx,
-        )
-        .disabled(!has_location)
-        .on_click(|_, _, cx| {
-            crate::navigation::request_open_tag_picker(cx, None);
-        });
-        // Пикер «стих → цепочка» для активного стиха (этап 23).
-        let chain_verse = icon_button(
-            "chain-verse",
-            gpui_kit::assets::IconName::Link,
-            crate::i18n::tr(cx, "Добавить стих в цепочку"),
-            cx,
-        )
-        .disabled(!has_location)
-        .on_click(|_, _, cx| {
-            crate::navigation::request_open_chain_picker(cx, None);
-        });
-        let toggle_right = icon_button(
-            "toggle-right-dock",
-            IconName::PanelRight,
-            crate::i18n::tr(cx, "Правая панель"),
-            cx,
-        )
-        .on_click(cx.listener(|this, _, window, cx| {
-            this.toggle_dock(DockPlacement::Right, window, cx);
-        }));
-        StatusBar::new()
-            .left(toggle_bottom)
-            .left(open_dictionary)
-            .left(open_crossrefs)
-            .left(comment_verse)
-            .left(tag_verse)
-            .left(chain_verse)
-            // Индикатор фоновой индексации (§6.6): виден, только пока
-            // shell строит FTS-индекс хотя бы одного модуля.
-            .children(self.indexing_label.as_ref().map(|label| {
-                h_flex()
-                    .id("indexing-indicator")
-                    .gap_1()
-                    .px_2()
-                    .child(
-                        gpui_kit::component::spinner::Spinner::new()
-                            .xsmall()
-                            .color(cx.theme().muted_foreground),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(label.clone()),
-                    )
-            }))
-            .child(toggle_right)
-    }
 }
 
-/// Иконочная кнопка chrome (Title bar / Status bar): ghost, xsmall, иконка,
+/// Иконочная кнопка chrome (Title bar / edge rail): ghost, xsmall, иконка,
 /// tooltip. Выделена в функцию не только ради краткости: `Button` весит
 /// ~9,4 КБ, а builder-цепочка в debug-сборке держит все промежуточные
 /// значения в кадре вызывающего до конца statement'а. В монолитном render
@@ -1053,10 +919,6 @@ impl Render for WorkspaceView {
         window.set_rem_size(px(ui_font_size * interface_scale));
         let can_back = crate::navigation::history_can_back(cx);
         let can_forward = crate::navigation::history_can_forward(cx);
-        let has_location = crate::services::app_services(cx)
-            .current_location
-            .lock()
-            .is_some();
         let workspace = cx.weak_entity();
         // Подпись бегунок места: при старте событие LocationChanged могло
         // уйти до подписки (книга открывается при создании панели чтения) —
@@ -1075,13 +937,24 @@ impl Render for WorkspaceView {
                     format!("{} {}:{}", book, location.chapter, location.verse)
                 })
         });
-        // TitleBar и StatusBar собираются отдельными методами: единое
+        // TitleBar собирается отдельным методом: единое
         // гигантское builder-выражение в debug-сборке раздувало кадр стека
         // render до ~0,9 МБ (временные объекты цепочки живут до конца
         // statement'а) — приложение падало с переполнением стека при
         // добавлении очередной кнопки.
         let title_bar = self.render_title_bar(can_back, can_forward, location_label, cx);
-        let status_bar = self.render_status_bar(has_location, cx);
+        // The bottom status strip is intentionally gone. The search lives in
+        // the left sidebar; the right edge keeps one persistent collapse
+        // control so the context panel is always discoverable.
+        let right_panel_toggle = icon_button(
+            "toggle-right-dock-edge",
+            IconName::PanelRight,
+            crate::i18n::tr(cx, "Правая панель"),
+            cx,
+        )
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.toggle_dock(DockPlacement::Right, window, cx);
+        }));
         let workspace_root = div()
             .id("workspace")
             .relative()
@@ -1125,8 +998,19 @@ impl Render for WorkspaceView {
                             .min_w_0()
                             .h_full()
                             .child(self.dock_area.clone()),
+                    )
+                    .child(
+                        v_flex()
+                            .h_full()
+                            .w(px(36.))
+                            .flex_shrink_0()
+                            .items_center()
+                            .pt_1()
+                            .border_l_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().sidebar)
+                            .child(right_panel_toggle),
                     ),
             )
-            .child(status_bar)
     }
 }

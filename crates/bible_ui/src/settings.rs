@@ -635,67 +635,75 @@ impl SettingsPanel {
                 .items_center()
                 .child(div().flex_1().min_w_0().child(Input::new(&input)))
                 .child(
-                    Button::new(if is_notes { "browse-notes-dir" } else { "browse-modules-dir" })
-                        .xsmall()
-                        .ghost()
-                        .label(crate::i18n::tr(_cx, "Обзор…"))
-                        .tooltip(crate::i18n::tr(_cx, "Выбрать папку в проводнике"))
-                        .on_click(move |_, window, cx| {
-                            let _ = picker_panel.update(cx, |this, cx| {
-                                let prompt = if is_notes {
-                                    "Выберите папку для хранилища заметок"
-                                } else {
-                                    "Выберите папку с модулями MyBible"
-                                };
-                                let receiver = cx.prompt_for_paths(PathPromptOptions {
-                                    files: false,
-                                    directories: true,
-                                    multiple: false,
-                                    prompt: Some(prompt.into()),
-                                });
-                                this.status = Some("Ожидаю выбор папки…".to_string());
-                                cx.notify();
-                                cx.spawn_in(window, async move |this, window| {
-                                    let result = receiver.await;
-                                    let _ = this.update_in(window, |this, window, cx| {
-                                        match result {
-                                            Ok(Ok(Some(paths))) => {
-                                                if let Some(path) = paths.into_iter().next() {
-                                                    let value = path.to_string_lossy().to_string();
-                                                    let target = if is_notes {
-                                                        &this.notes_dir_input
-                                                    } else {
-                                                        &this.modules_dir_input
-                                                    };
-                                                    target.update(cx, |state, cx| {
-                                                        state.set_value(value, window, cx);
-                                                    });
-                                                    this.status = Some(
-                                                        "Папка выбрана. Нажмите «Применить», чтобы сохранить её.".to_string(),
-                                                    );
+                    Button::new(if is_notes {
+                        "browse-notes-dir"
+                    } else {
+                        "browse-modules-dir"
+                    })
+                    .xsmall()
+                    .ghost()
+                    .label(crate::i18n::tr(_cx, "Обзор…"))
+                    .tooltip(crate::i18n::tr(_cx, "Выбрать папку в проводнике"))
+                    .on_click(move |_, window, cx| {
+                        let _ = picker_panel.update(cx, |this, cx| {
+                            let prompt = if is_notes {
+                                "Выберите папку для хранилища заметок"
+                            } else {
+                                "Выберите папку с модулями MyBible"
+                            };
+                            let receiver = cx.prompt_for_paths(PathPromptOptions {
+                                files: false,
+                                directories: true,
+                                multiple: false,
+                                prompt: Some(prompt.into()),
+                            });
+                            this.status = Some("Ожидаю выбор папки…".to_string());
+                            cx.notify();
+                            cx.spawn_in(window, async move |this, window| {
+                                let result = receiver.await;
+                                let _ = this.update_in(window, |this, window, cx| {
+                                    match result {
+                                        Ok(Ok(Some(paths))) => {
+                                            if let Some(path) = paths.into_iter().next() {
+                                                let value = path.to_string_lossy().to_string();
+                                                let target = if is_notes {
+                                                    &this.notes_dir_input
                                                 } else {
-                                                    this.status = Some("Папка не выбрана.".to_string());
+                                                    &this.modules_dir_input
+                                                };
+                                                target.update(cx, |state, cx| {
+                                                    state.set_value(value, window, cx);
+                                                });
+                                                if is_notes {
+                                                    this.apply_notes_dir(cx);
+                                                } else {
+                                                    this.apply_modules_dir(cx);
                                                 }
-                                            }
-                                            Ok(Ok(None)) => {
-                                                this.status = Some("Выбор папки отменён.".to_string());
-                                            }
-                                            Ok(Err(error)) => {
-                                                this.status = Some(format!(
-                                                    "Не удалось открыть проводник: {error:#}"
-                                                ));
-                                            }
-                                            Err(_) => {
-                                                this.status = Some(
-                                                    "Диалог выбора папки закрылся без результата.".to_string(),
-                                                );
+                                            } else {
+                                                this.status = Some("Папка не выбрана.".to_string());
                                             }
                                         }
-                                        cx.notify();
-                                    });
-                                }).detach();
-                            });
-                        }),
+                                        Ok(Ok(None)) => {
+                                            this.status = Some("Выбор папки отменён.".to_string());
+                                        }
+                                        Ok(Err(error)) => {
+                                            this.status = Some(format!(
+                                                "Не удалось открыть проводник: {error:#}"
+                                            ));
+                                        }
+                                        Err(_) => {
+                                            this.status = Some(
+                                                "Диалог выбора папки закрылся без результата."
+                                                    .to_string(),
+                                            );
+                                        }
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                            .detach();
+                        });
+                    }),
                 )
                 .child(
                     Button::new(apply_id)
@@ -1036,6 +1044,30 @@ impl SettingsPanel {
                     SettingGroup::new()
                         .title(crate::i18n::tr(cx, "Папки приложения"))
                         .items([
+                            SettingItem::render(|_options, _window, cx| {
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(crate::i18n::tr(
+                                                cx,
+                                                "Скачать модули MyBible, распаковать архивы и сложить файлы в одну папку.",
+                                            )),
+                                    )
+                                    .child(
+                                        Button::new("download-modules-link")
+                                            .small()
+                                            .label(crate::i18n::tr(cx, "Где скачать модули"))
+                                            .on_click(|_, _, cx| {
+                                                cx.open_url("https://www.ph4.ru/b4_1.php")
+                                            }),
+                                    )
+                            }),
                             Self::path_item(
                                 &panel,
                                 &self.modules_dir_input,

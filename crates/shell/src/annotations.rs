@@ -148,7 +148,17 @@ pub fn verse_comment(services: &AppServices, anchor: &AnchoredRef) -> Option<Ver
         .flatten()
 }
 
-/// Сохранить комментарий к стиху; пустое тело (после trim) = удалить.
+/// Все личные заметки для стиха, новые первыми.
+pub fn verse_comments(services: &AppServices, anchor: &AnchoredRef) -> Vec<VerseComment> {
+    services
+        .annotations
+        .as_ref()
+        .and_then(|store| store.comments(anchor).ok())
+        .unwrap_or_default()
+}
+
+/// Создать отдельную личную заметку к стиху. Каждое сохранение получает
+/// собственный id и никогда не перезаписывает предыдущую запись.
 pub fn save_verse_comment(services: &AppServices, anchor: AnchoredRef, body: &str) -> Result<()> {
     let store = services
         .annotations
@@ -156,17 +166,24 @@ pub fn save_verse_comment(services: &AppServices, anchor: AnchoredRef, body: &st
         .ok_or_else(|| anyhow::anyhow!("annotations store is unavailable"))?;
     let body = body.trim();
     if body.is_empty() {
-        store.remove_comment(&anchor)?;
         return Ok(());
     }
-    let created_at = store.comment(&anchor)?.map_or(0, |saved| saved.created_at);
     store.put_comment(&VerseComment {
+        id: bible_domain::chains::new_id(),
         anchor,
         body: body.to_string(),
         note_relpath: None,
-        created_at,
+        created_at: 0,
         updated_at: 0,
     })
+}
+
+pub fn remove_verse_comment(services: &AppServices, id: &str) -> Result<bool> {
+    services
+        .annotations
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("annotations store is unavailable"))?
+        .remove_comment_by_id(id)
 }
 
 #[cfg(test)]
@@ -184,6 +201,7 @@ mod tests {
 
     fn comment(module: &str, verse: u16) -> VerseComment {
         VerseComment {
+            id: format!("comment-{module}-{verse}"),
             anchor: anchor(module, 1, verse, None),
             body: "текст".to_string(),
             note_relpath: None,

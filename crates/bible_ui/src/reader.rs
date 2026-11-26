@@ -472,7 +472,7 @@ impl ReaderPanel {
             &navigation::bus(cx),
             window,
             |this, _, event: &navigation::OpenTagPicker, window, cx| {
-                if this.active {
+                if event.target_tab == Some(this.tab_id) {
                     let reference = event.reference.or_else(|| this.current_reference());
                     if let Some(reference) = reference {
                         this.open_tag_picker(reference, window, cx);
@@ -487,7 +487,7 @@ impl ReaderPanel {
             &navigation::bus(cx),
             window,
             |this, _, event: &navigation::OpenChainPicker, window, cx| {
-                if this.active {
+                if event.target_tab == Some(this.tab_id) {
                     let reference = event.reference.or_else(|| this.current_reference());
                     if let Some(reference) = reference {
                         this.open_chain_picker(reference, window, cx);
@@ -1235,6 +1235,7 @@ impl ReaderPanel {
 
     fn render_row(
         ix: usize,
+        tab_id: u64,
         row: &Row,
         module: &Option<ModuleId>,
         book: Option<BookNumber>,
@@ -1310,6 +1311,7 @@ impl ReaderPanel {
                         move |menu, _, _cx| {
                             Self::verse_context_menu(
                                 menu,
+                                tab_id,
                                 &module,
                                 book,
                                 chapter,
@@ -1353,6 +1355,7 @@ impl ReaderPanel {
                 }
                 text_cell = text_cell.child(Self::render_verse_text(
                     ix,
+                    tab_id,
                     chapter,
                     verse,
                     clean,
@@ -1540,6 +1543,7 @@ impl ReaderPanel {
     /// панели узнают событием AnnotationsChanged.
     fn verse_context_menu(
         menu: gpui_kit::component::menu::PopupMenu,
+        target_tab: u64,
         module: &Option<ModuleId>,
         book: Option<BookNumber>,
         chapter: u16,
@@ -1577,7 +1581,7 @@ impl ReaderPanel {
             PopupMenuItem::new(crate::i18n::tr_static("Тег стиха…")).on_click({
                 let reference = VerseRef::single(book, chapter, verse);
                 move |_, _, cx| {
-                    navigation::request_open_tag_picker(cx, Some(reference));
+                    navigation::request_open_tag_picker_for_tab(cx, reference, target_tab);
                 }
             }),
         );
@@ -1587,7 +1591,35 @@ impl ReaderPanel {
             PopupMenuItem::new(crate::i18n::tr_static("Добавить в цепочку…")).on_click({
                 let reference = VerseRef::single(book, chapter, verse);
                 move |_, _, cx| {
-                    navigation::request_open_chain_picker(cx, Some(reference));
+                    navigation::request_open_chain_picker_for_tab(cx, reference, target_tab);
+                }
+            }),
+        );
+
+        // Персональная параллельная ссылка создаётся в секции правой панели.
+        // Сначала делаем выбранный стих текущим, чтобы форма получила точный
+        // источник даже при split screen.
+        menu = menu.item(
+            PopupMenuItem::new(crate::i18n::tr_static("Добавить параллельный стих")).on_click({
+                let (module, book_title, book_short) = (
+                    module.clone(),
+                    book_title.to_string(),
+                    book_short.to_string(),
+                );
+                move |_, _, cx| {
+                    navigation::history_set_active(cx, target_tab);
+                    navigation::request_activate_verse(
+                        cx,
+                        navigation::VerseActivated {
+                            module: module.clone(),
+                            book,
+                            book_title: book_title.clone(),
+                            book_short: book_short.clone(),
+                            chapter,
+                            verse,
+                        },
+                    );
+                    navigation::request_open_verse_section(cx, navigation::VerseSection::CrossRefs);
                 }
             }),
         );
@@ -1602,6 +1634,7 @@ impl ReaderPanel {
                     book_short.to_string(),
                 );
                 move |_, _, cx| {
+                    navigation::history_set_active(cx, target_tab);
                     navigation::request_activate_verse(
                         cx,
                         navigation::VerseActivated {
@@ -1631,6 +1664,7 @@ impl ReaderPanel {
     /// оконный слой по document_order (architecture.md §6.3.2).
     fn render_verse_text(
         row_ix: usize,
+        tab_id: u64,
         chapter: u16,
         verse: u16,
         clean: &CleanVerse,
@@ -1906,6 +1940,7 @@ impl ReaderPanel {
                         }
                         Self::verse_context_menu(
                             menu.separator(),
+                            tab_id,
                             &module,
                             book,
                             chapter,
@@ -2061,7 +2096,9 @@ impl ReaderPanel {
                         menu.separator().item(
                             PopupMenuItem::new(crate::i18n::tr_static("Изменить теги…")).on_click(
                                 move |_, _, cx| {
-                                    navigation::request_open_tag_picker(cx, Some(reference))
+                                    navigation::request_open_tag_picker_for_tab(
+                                        cx, reference, tab_id,
+                                    )
                                 },
                             ),
                         )
@@ -2961,6 +2998,7 @@ impl Render for ReaderPanel {
             let book_title = self.book_title.clone();
             let book_short = self.book_short.clone();
             let reader = (!self.word_panel_visible).then(|| cx.weak_entity());
+            let tab_id = self.tab_id;
             let annotations = self.annotations.clone();
             let chain_marks = self.chain_marks.clone();
             let tag_marks = self.tag_marks.clone();
@@ -2991,6 +3029,7 @@ impl Render for ReaderPanel {
             let verses = list(self.list_state.clone(), move |ix, _, cx| {
                 Self::render_row(
                     ix,
+                    tab_id,
                     &rows[ix],
                     &module,
                     book,

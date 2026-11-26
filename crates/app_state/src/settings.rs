@@ -63,6 +63,8 @@ pub struct Settings {
     pub sidebar_section: String,
     /// Левая менюшка видима (кнопка в Status bar, этап 15).
     pub sidebar_visible: bool,
+    /// Ширина раскрытой информационной части левой панели.
+    pub sidebar_content_width: f32,
     /// Основной шрифт интерфейса. Пусто — системный шрифт темы.
     pub ui_font_family: String,
     /// Базовый размер шрифта интерфейса в px (до общего масштаба окна).
@@ -167,6 +169,7 @@ impl Default for Settings {
             sidebar_collapsed: false,
             sidebar_section: "dictionaries".to_string(),
             sidebar_visible: true,
+            sidebar_content_width: 420.,
             ui_font_family: String::new(),
             ui_font_size: 16.0,
             reading_font_family: String::new(),

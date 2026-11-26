@@ -61,12 +61,24 @@ fn annotation_from_row(row: AnnotationRow) -> Result<Annotation> {
     })
 }
 
-type CommentRow = (String, i64, i64, i64, i64, Option<String>, String, i64, i64);
+type CommentRow = (
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    Option<String>,
+    String,
+    i64,
+    i64,
+);
 
 fn comment_from_row(row: CommentRow) -> VerseComment {
-    let (module, book, chapter, verse, word_index, note_relpath, body, created_at, updated_at) =
+    let (id, module, book, chapter, verse, word_index, note_relpath, body, created_at, updated_at) =
         row;
     VerseComment {
+        id,
         anchor: AnchoredRef {
             module: ModuleId(module),
             reference: VerseRef::single(BookNumber(book), chapter as u16, verse as u16),
@@ -148,14 +160,19 @@ impl AnnotationStore for SqliteAnnotationStore {
     }
 
     fn comment(&self, anchor: &AnchoredRef) -> Result<Option<VerseComment>> {
+        Ok(self.comments(anchor)?.into_iter().next())
+    }
+
+    fn comments(&self, anchor: &AnchoredRef) -> Result<Vec<VerseComment>> {
         self.db.with(|connection| {
-            let row = connection.select_row_bound::<(String, i64, i64, i64, i64), CommentRow>(
-                "SELECT module_id, book, chapter, verse, word_index, note_relpath, body, \
+            let rows = connection.select_bound::<(String, i64, i64, i64, i64), CommentRow>(
+                "SELECT id, module_id, book, chapter, verse, word_index, note_relpath, body, \
                         created_at, updated_at \
                  FROM verse_comments \
-                 WHERE module_id = ? AND book = ? AND chapter = ? AND verse = ? AND word_index = ?",
+                 WHERE module_id = ? AND book = ? AND chapter = ? AND verse = ? AND word_index = ? \
+                 ORDER BY created_at DESC, id DESC",
             )?(anchor_binds(anchor))?;
-            Ok(row.map(comment_from_row))
+            Ok(rows.into_iter().map(comment_from_row).collect())
         })
     }
 
@@ -169,14 +186,15 @@ impl AnnotationStore for SqliteAnnotationStore {
         self.db.with(|connection| {
             connection.exec_bound(
                 "INSERT INTO verse_comments(\
-                    module_id, book, chapter, verse, word_index, note_relpath, body, \
+                    id, module_id, book, chapter, verse, word_index, note_relpath, body, \
                     created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
-                 ON CONFLICT(module_id, book, chapter, verse, word_index) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(id) \
                  DO UPDATE SET note_relpath = excluded.note_relpath, \
                                body = excluded.body, \
                                updated_at = excluded.updated_at",
             )?((
+                comment.id.as_str(),
                 comment.anchor.module.to_string(),
                 comment.anchor.reference.book.0,
                 comment.anchor.reference.chapter as i64,
@@ -204,13 +222,24 @@ impl AnnotationStore for SqliteAnnotationStore {
         })
     }
 
+    fn remove_comment_by_id(&self, id: &str) -> Result<bool> {
+        self.db.with(|connection| {
+            let existed: Option<i64> = connection
+                .select_row_bound("SELECT COUNT(*) FROM verse_comments WHERE id = ?")?(
+                id
+            )?;
+            connection.exec_bound("DELETE FROM verse_comments WHERE id = ?")?(id)?;
+            Ok(existed.unwrap_or(0) > 0)
+        })
+    }
+
     fn comments_for_book(&self, book: BookNumber) -> Result<Vec<VerseComment>> {
         self.db.with(|connection| {
             let rows = connection.select_bound::<i64, CommentRow>(
-                "SELECT module_id, book, chapter, verse, word_index, note_relpath, body, \
+                "SELECT id, module_id, book, chapter, verse, word_index, note_relpath, body, \
                         created_at, updated_at \
                  FROM verse_comments WHERE book = ? \
-                 ORDER BY module_id, chapter, verse, word_index",
+                 ORDER BY module_id, chapter, verse, word_index, created_at",
             )?(book.0)?;
             Ok(rows.into_iter().map(comment_from_row).collect())
         })
@@ -328,6 +357,7 @@ mod tests {
 
         store
             .put_comment(&VerseComment {
+                id: "note-1".to_string(),
                 anchor: anchor.clone(),
                 body: "любимый стих".to_string(),
                 note_relpath: None,
@@ -343,6 +373,7 @@ mod tests {
         // Перезапись сохраняет created_at исходного.
         store
             .put_comment(&VerseComment {
+                id: "note-1".to_string(),
                 anchor: anchor.clone(),
                 body: "обновлённый".to_string(),
                 note_relpath: None,
@@ -357,5 +388,30 @@ mod tests {
         assert!(store.remove_comment(&anchor).unwrap());
         assert!(store.comment(&anchor).unwrap().is_none());
         assert!(!store.remove_comment(&anchor).unwrap());
+    }
+
+    #[test]
+    fn multiple_notes_share_one_verse_without_overwrite() {
+        let store = store();
+        let anchor = anchor("RST", 17);
+        for (id, body) in [("note-a", "первая"), ("note-b", "вторая")] {
+            store
+                .put_comment(&VerseComment {
+                    id: id.to_string(),
+                    anchor: anchor.clone(),
+                    body: body.to_string(),
+                    note_relpath: None,
+                    created_at: 0,
+                    updated_at: 0,
+                })
+                .unwrap();
+        }
+
+        let notes = store.comments(&anchor).unwrap();
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().any(|note| note.id == "note-a"));
+        assert!(notes.iter().any(|note| note.id == "note-b"));
+        assert!(store.remove_comment_by_id("note-a").unwrap());
+        assert_eq!(store.comments(&anchor).unwrap().len(), 1);
     }
 }

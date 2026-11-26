@@ -51,6 +51,10 @@ fn english(russian: &str) -> &str {
         "Английский" => "English",
         "Язык" => "Language",
         "Папки приложения" => "Application folders",
+        "Где скачать модули" => "Where to download modules",
+        "Скачать модули MyBible, распаковать архивы и сложить файлы в одну папку." => {
+            "Download MyBible modules, unpack the archives, and put the files in one folder."
+        }
         "Поисковый индекс" => "Search index",
         "Реиндексировать модули" => "Reindex modules",
         "Полностью пересоздаёт индексы переводов, словарей и комментариев." => {
@@ -220,6 +224,8 @@ fn english(russian: &str) -> &str {
         "+ Новая цепочка" => "+ New chain",
         "+ Новый тег" => "+ New tag",
         "+ После" => "+ After",
+        "Добавить причину" => "Add cause",
+        "Добавить следствие" => "Add consequence",
         "+ Создать" => "+ Create",
         "+ Узел" => "+ Node",
         "⩒ слияние" => "⩒ merge",
@@ -265,6 +271,11 @@ fn english(russian: &str) -> &str {
         "Имя тега…" => "Tag name…",
         "Ин 3:16, Быт 1:1, John 3…" => "John 3:16, Gen 1:1…",
         "Комментарий к стиху" => "Verse note",
+        "Добавить параллельный стих" => "Add cross-reference",
+        "Каждое сохранение создаёт отдельную заметку." => {
+            "Each save creates a separate note."
+        }
+        "Удалить заметку" => "Delete note",
         "Модуль Библии для предпросмотра" => "Bible module for preview",
         "Мой комментарий к стиху…" => "My verse note…",
         "Нажмите на заголовок выше, чтобы выбрать книгу." => {
@@ -480,6 +491,7 @@ fn english(russian: &str) -> &str {
         "Учитывать диакритику/огласовки" => {
             "Respect diacritics/vowel marks"
         }
+        "Уч.Диак." => "Diacritics",
         "Источники и книги поиска" => "Search sources and books",
         "Выбранные книги Библии" => "Selected Bible books",
         "Все" => "All",

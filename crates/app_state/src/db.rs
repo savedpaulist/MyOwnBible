@@ -20,7 +20,7 @@ use crate::paths;
 
 /// Актуальная версия схемы. Поднимаем при изменении DDL; миграции —
 /// пронумерованные блоки в `SCHEMA`.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Миграция v1: аннотации и комментарии к стихам (§4.2.2).
 const MIGRATION_V1: &str = "
@@ -133,6 +133,38 @@ ALTER TABLE chains ADD COLUMN bible_module TEXT;
 ALTER TABLE chain_nodes ADD COLUMN bible_module TEXT;
 ";
 
+/// Multiple personal notes may share one verse. The original address primary
+/// key made each Save overwrite the previous note, so v6 gives every note an
+/// independent portable id while preserving existing data.
+const MIGRATION_V6: &str = "
+ALTER TABLE verse_comments RENAME TO verse_comments_legacy;
+DROP INDEX idx_verse_comments_ref;
+CREATE TABLE verse_comments(
+    id TEXT PRIMARY KEY,
+    module_id TEXT NOT NULL,
+    book INTEGER NOT NULL,
+    chapter INTEGER NOT NULL,
+    verse INTEGER NOT NULL,
+    word_index INTEGER NOT NULL DEFAULT -1,
+    note_relpath TEXT,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX idx_verse_comments_ref ON verse_comments(book, chapter, verse);
+CREATE INDEX idx_verse_comments_anchor ON verse_comments(
+    module_id, book, chapter, verse, word_index, created_at
+);
+INSERT INTO verse_comments(
+    id, module_id, book, chapter, verse, word_index, note_relpath, body,
+    created_at, updated_at
+)
+SELECT 'legacy-' || hex(randomblob(16)), module_id, book, chapter, verse,
+       word_index, note_relpath, body, created_at, updated_at
+FROM verse_comments_legacy;
+DROP TABLE verse_comments_legacy;
+";
+
 /// Открытая БД состояния за мьютексом (sqlez Connection — !Send).
 pub struct StateDb {
     inner: Mutex<Connection>,
@@ -194,6 +226,7 @@ impl StateDb {
                 (3, MIGRATION_V3),
                 (4, MIGRATION_V4),
                 (5, MIGRATION_V5),
+                (6, MIGRATION_V6),
             ] {
                 if version < migration_version {
                     for statement in sql.split(';').map(str::trim).filter(|sql| !sql.is_empty()) {
