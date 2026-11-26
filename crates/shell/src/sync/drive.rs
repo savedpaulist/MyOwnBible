@@ -22,11 +22,13 @@ const DRIVE: &str = "https://www.googleapis.com/drive/v3/";
 const UPLOAD: &str = "https://www.googleapis.com/upload/drive/v3/files";
 const MARKER: &str = "bibleown-sync-v1";
 // OAuth Desktop clients are public clients: distributed applications cannot
-// keep a client secret confidential. Embed only the public Client ID and use
-// PKCE for every authorization-code exchange. The build-time environment
-// variable remains an override for forks and local development.
+// keep these credentials confidential. Bundle the complete client pair so the
+// token endpoint receives the same request as with the downloaded JSON, and
+// use PKCE for every authorization-code exchange. Build-time variables remain
+// overrides for forks and local development.
 const BUNDLED_CLIENT_ID: &str =
     "108525654331-tlkmug1o0m2nefre3r2bkmn8hoopceic.apps.googleusercontent.com";
+const BUNDLED_CLIENT_SECRET: &str = "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";
 
 fn random_secret() -> Result<String> {
     let mut bytes = [0; 32];
@@ -63,7 +65,7 @@ impl Client {
             Self {
                 client_id: id.into(),
                 client_secret: option_env!("BIBLEOWN_GOOGLE_CLIENT_SECRET")
-                    .unwrap_or("")
+                    .unwrap_or(BUNDLED_CLIENT_SECRET)
                     .into(),
             }
             .validate()?,
@@ -82,10 +84,10 @@ impl Client {
     pub fn start_login(&self) -> Result<Login> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
-        let redirect = format!(
-            "http://127.0.0.1:{}/oauth2/callback",
-            listener.local_addr()?.port()
-        );
+        // Google documents the Desktop loopback redirect as the IP and the
+        // ephemeral port without an additional path. Keep the token request
+        // byte-for-byte consistent with that authorization redirect.
+        let redirect = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
         let verifier = random_secret()?;
         let state = random_secret()?;
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -207,7 +209,8 @@ impl Login {
             };
             let mut code = None;
             let mut state = None;
-            if let Some(path) = path.filter(|path| path.starts_with("/oauth2/callback?"))
+            if let Some(path) =
+                path.filter(|path| path.starts_with("/?") || path.starts_with("/oauth2/callback?"))
                 && let Ok(url) = Url::parse(&format!("http://127.0.0.1{path}"))
             {
                 for (key, value) in url.query_pairs() {
@@ -459,12 +462,49 @@ struct Response {
 
 impl Response {
     fn check(&self) -> Result<()> {
-        ensure!(
-            (200..300).contains(&self.status),
-            "Google Drive вернул HTTP {}",
-            self.status
-        );
+        if !(200..300).contains(&self.status) {
+            bail!(
+                "Google Drive вернул HTTP {}: {}",
+                self.status,
+                self.error_message()
+            );
+        }
         Ok(())
+    }
+
+    fn error_message(&self) -> String {
+        if let Ok(value) = serde_json::from_slice::<Value>(&self.body) {
+            let error = value.get("error");
+            let code = error.and_then(Value::as_str).or_else(|| {
+                error
+                    .and_then(|error| error.get("status"))
+                    .and_then(Value::as_str)
+            });
+            let description = value
+                .get("error_description")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    error
+                        .and_then(|error| error.get("message"))
+                        .and_then(Value::as_str)
+                });
+            match (code, description) {
+                (Some(code), Some(description)) if code != description => {
+                    return format!("{code}: {description}");
+                }
+                (Some(code), _) => return code.to_owned(),
+                (_, Some(description)) => return description.to_owned(),
+                _ => {}
+            }
+        }
+
+        let text = String::from_utf8_lossy(&self.body);
+        let text = text.trim();
+        if text.is_empty() {
+            "Google не сообщил причину".into()
+        } else {
+            text.chars().take(300).collect()
+        }
     }
 
     fn json<T: DeserializeOwned>(&self) -> Result<T> {
@@ -576,5 +616,29 @@ mod tests {
         let client = Client::bundled().unwrap().unwrap();
         assert!(client.id().ends_with(".apps.googleusercontent.com"));
         assert!(!client.id().contains(char::is_whitespace));
+        assert!(!client.client_secret.is_empty());
+    }
+
+    #[test]
+    fn oauth_error_includes_code_and_description() {
+        let response = Response {
+            status: 400,
+            body: br#"{"error":"invalid_client","error_description":"Unauthorized"}"#.to_vec(),
+        };
+
+        let error = response.check().unwrap_err().to_string();
+        assert!(error.contains("HTTP 400"));
+        assert!(error.contains("invalid_client: Unauthorized"));
+    }
+
+    #[test]
+    fn drive_error_includes_api_message() {
+        let response = Response {
+            status: 400,
+            body: br#"{"error":{"code":400,"message":"Bad request","status":"INVALID_ARGUMENT"}}"#
+                .to_vec(),
+        };
+
+        assert_eq!(response.error_message(), "INVALID_ARGUMENT: Bad request");
     }
 }

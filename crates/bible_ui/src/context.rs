@@ -1287,19 +1287,6 @@ impl BasePanel for ContextPanel {
     fn panel_name(&self) -> &'static str {
         Self::NAME
     }
-
-    /// Панель стала/перестала быть отображаемой вкладкой своей группы.
-    /// Чтение слушает это событие: hover-карточки слов показываются,
-    /// только когда панель закрыта (контракт set_active — base dock).
-    fn set_active(&mut self, active: bool, _: &mut Window, cx: &mut Context<Self>) {
-        navigation::set_word_panel_visible(cx, active);
-    }
-
-    /// Закрытие/удаление панели — тоже сигнал «не видна» (контракт
-    /// base dock: set_active(false) при удалении не приходит).
-    fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        navigation::set_word_panel_visible(cx, false);
-    }
 }
 
 impl Panel for ContextPanel {

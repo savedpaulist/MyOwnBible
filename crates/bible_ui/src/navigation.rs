@@ -99,9 +99,9 @@ pub struct OpenVerseStylePicker {
     pub word_scope: bool,
 }
 
-/// Видимость панели «Слово» изменилась (стала активной вкладкой,
-/// скрылась, закрылась). От неё зависит, показывать ли hover-карточки
-/// слов в чтении: hover работает, только когда панель закрыта.
+/// Видимость правой панели изменилась. От неё зависит, показывать ли
+/// hover-карточки слов в чтении: hover работает, только когда весь правый
+/// dock закрыт, а не когда в нём выбрана другая вкладка.
 #[derive(Debug, Clone, Copy)]
 pub struct WordPanelVisibilityChanged(pub bool);
 
@@ -269,8 +269,12 @@ pub struct HistoryBus(pub Entity<HistoryStore>);
 
 impl Global for HistoryBus {}
 
-/// Пустой эмиттер: состояние шине не нужно, только события.
-pub struct Navigation;
+/// Общая шина событий хранит также снимок видимости правой панели. Новая
+/// вкладка чтения может появиться уже после события открытия dock и должна
+/// сразу получить правильное состояние.
+pub struct Navigation {
+    word_panel_visible: bool,
+}
 
 impl EventEmitter<OpenBook> for Navigation {}
 impl EventEmitter<OpenBookInNewTab> for Navigation {}
@@ -303,7 +307,9 @@ impl Global for NavBus {}
 
 /// Создаёт шину. Вызывается один раз при старте, до открытия окон.
 pub fn init(cx: &mut App) {
-    let navigation = cx.new(|_| Navigation);
+    let navigation = cx.new(|_| Navigation {
+        word_panel_visible: false,
+    });
     cx.set_global(NavBus(navigation));
     let history = cx.new(|_| HistoryStore {
         stacks: std::collections::HashMap::new(),
@@ -487,7 +493,17 @@ pub fn request_open_verse_style_picker(cx: &mut App, event: OpenVerseStylePicker
 /// Сообщить о видимости панели «Слово» (вызывает сама панель из
 /// `set_active`/`on_removed`).
 pub fn set_word_panel_visible(cx: &mut App, visible: bool) {
-    bus(cx).update(cx, |_, cx| cx.emit(WordPanelVisibilityChanged(visible)));
+    bus(cx).update(cx, |navigation, cx| {
+        if navigation.word_panel_visible != visible {
+            navigation.word_panel_visible = visible;
+            cx.emit(WordPanelVisibilityChanged(visible));
+        }
+    });
+}
+
+/// Текущий снимок нужен вкладкам чтения, созданным после последнего события.
+pub fn word_panel_visible(cx: &App) -> bool {
+    bus(cx).read(cx).word_panel_visible
 }
 
 /// Опубликовать текущее место чтения (вызывает чтение из

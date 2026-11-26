@@ -552,7 +552,7 @@ impl ReaderPanel {
             position: (1, 1),
             error: None,
             navigator: None,
-            word_panel_visible: false,
+            word_panel_visible: navigation::word_panel_visible(cx),
             word_preview: None,
             annotations: Rc::new(shell::BookAnnotations::default()),
             chain_marks: Rc::new(HashMap::new()),

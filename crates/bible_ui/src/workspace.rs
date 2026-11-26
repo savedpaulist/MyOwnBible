@@ -94,6 +94,12 @@ impl WorkspaceView {
             }
         }
 
+        // Hover-статья слова нужна только при закрытом правом dock. Панель
+        // хранит это состояние централизованно, чтобы восстановленные и
+        // позднее созданные вкладки чтения не зависели от порядка событий.
+        let right_panel_visible = dock_area.read(cx).is_dock_open(DockPlacement::Right);
+        crate::navigation::set_word_panel_visible(cx, right_panel_visible);
+
         // Debounce-запись раскладки: LayoutChanged летит на каждое
         // перетаскивание разделителя, писать файл нужно лишь когда всё стихло.
         cx.subscribe_in(
@@ -110,6 +116,8 @@ impl WorkspaceView {
                             area.remove_dock(DockPlacement::Bottom, window, cx);
                         });
                     }
+                    let right_panel_visible = dock_area.read(cx).is_dock_open(DockPlacement::Right);
+                    crate::navigation::set_word_panel_visible(cx, right_panel_visible);
                     this.schedule_layout_save(&dock_area, window, cx);
                 }
             },
